@@ -55,9 +55,11 @@ pub fn matches(process: &Process, pattern: &str) -> bool {
             .exe()
             .is_some_and(|exe| exe.to_string_lossy().contains(pattern));
     }
+    // Case-insensitive: Windows reports process names in arbitrary case
+    // ("Claude.exe" vs "claude.exe"), and users write patterns in any case.
     let name = process.name().to_string_lossy();
     let name = name.strip_suffix(".exe").unwrap_or(&name);
-    name == pattern
+    name.eq_ignore_ascii_case(pattern)
 }
 
 /// All pids matching any pattern of any configured app, excluding ourselves.
