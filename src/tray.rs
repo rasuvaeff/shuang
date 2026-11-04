@@ -77,9 +77,9 @@ mod win {
                 Msg::Status(status, detail) => {
                     if let Some(tray) = &self.tray {
                         if let Ok(icon) = tray_icon::Icon::from_rgba(icon_rgba(status), 32, 32) {
-                            tray.set_icon(Some(icon));
+                            let _ = tray.set_icon(Some(icon));
                         }
-                        tray.set_tooltip(Some(format!("shuang: {detail}")));
+                        let _ = tray.set_tooltip(Some(format!("shuang: {detail}")));
                     }
                     self.status_item.set_text(detail);
                 }
@@ -307,7 +307,7 @@ impl TrayHandle {
             if proxy.is_none() {
                 eprintln!("shuang: no tray icon — running headless");
             }
-            return Self { inner: proxy, quit };
+            Self { inner: proxy, quit }
         }
 
         // macOS: the tray needs a main-thread run loop, which a daemon
@@ -315,7 +315,7 @@ impl TrayHandle {
         #[cfg(not(any(unix, windows)))]
         {
             eprintln!("shuang: tray is not available on this platform yet — running headless");
-            return Self { inner: None, quit };
+            Self { inner: None, quit }
         }
 
         #[cfg(unix)]
@@ -345,11 +345,6 @@ impl TrayHandle {
         #[cfg(windows)]
         if let Some(proxy) = &self.inner {
             let _ = proxy.send_event(Msg::Status(status, detail.to_string()));
-            return;
-        }
-        #[cfg(any(unix, windows))]
-        if self.inner.is_none() {
-            return;
         }
         #[cfg(unix)]
         if let Some(handle) = &self.inner {
