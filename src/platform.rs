@@ -84,7 +84,9 @@ mod imp {
     }
 
     pub fn suspend(pid: u32) -> Result<()> {
-        let fun = suspend_fn().unwrap_or_else(|| bail!("NtSuspendProcess not found in ntdll"));
+        let Some(fun) = suspend_fn() else {
+            bail!("NtSuspendProcess not found in ntdll");
+        };
         let ok = with_handle(pid, PROCESS_SUSPEND_RESUME, |h| {
             Some(unsafe { fun(h) } >= 0)
         });
@@ -96,7 +98,9 @@ mod imp {
     }
 
     pub fn resume(pid: u32) -> Result<()> {
-        let fun = resume_fn().unwrap_or_else(|| bail!("NtResumeProcess not found in ntdll"));
+        let Some(fun) = resume_fn() else {
+            bail!("NtResumeProcess not found in ntdll");
+        };
         let ok = with_handle(pid, PROCESS_SUSPEND_RESUME, |h| {
             Some(unsafe { fun(h) } >= 0)
         });
@@ -122,7 +126,7 @@ mod imp {
         terminate(pid)
     }
 
-    unsafe fn TerminateProcess_Thunk(handle: HANDLE) -> u32 {
+    unsafe fn TerminateProcess_Thunk(handle: HANDLE) -> i32 {
         windows_sys::Win32::System::Threading::TerminateProcess(handle, 1)
     }
 
