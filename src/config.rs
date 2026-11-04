@@ -200,6 +200,23 @@ pub struct State {
     pub active_profile: Option<String>,
     /// Pids left frozen by the current/previous run (crash recovery).
     pub frozen: Vec<u32>,
+    /// Panel-set overrides: applied on top of config.toml so the hand-written
+    /// file is never rewritten.
+    pub settings: SettingsOverride,
+    /// Trusted gateway MACs added via the panel.
+    pub trusted_networks: Vec<String>,
+}
+
+/// Per-setting overrides written by the panel; `None` = keep the config value.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct SettingsOverride {
+    pub interval_secs: Option<u64>,
+    pub grace_secs: Option<u64>,
+    pub close_secs: Option<u64>,
+    pub min_agree: Option<usize>,
+    /// false disables desktop notifications for `daemon`.
+    pub notify: Option<bool>,
 }
 
 /// Default config path: `$XDG_CONFIG_HOME/shuang/config.toml`, falling back to
@@ -224,6 +241,29 @@ pub fn state_path(config_path: &Path) -> PathBuf {
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("state.toml")
+}
+
+impl Config {
+    /// Apply `state.settings` on top of the config values (panel overrides).
+    pub fn apply_overrides(&mut self, state: &State) {
+        if let Some(v) = state.settings.interval_secs {
+            self.ip_check.interval_secs = v;
+        }
+        if let Some(v) = state.settings.grace_secs {
+            self.timing.grace_secs = v;
+        }
+        if let Some(v) = state.settings.close_secs {
+            self.timing.close_secs = v;
+        }
+        if let Some(v) = state.settings.min_agree {
+            self.ip_check.min_agree = v;
+        }
+        for mac in &state.trusted_networks {
+            if !self.trusted_networks.contains(mac) {
+                self.trusted_networks.push(mac.clone());
+            }
+        }
+    }
 }
 
 /// Load the config. A missing file is fine when the path came from the

@@ -369,7 +369,8 @@ async fn dns_country(client: &reqwest::Client, services: &[String], ip: &str) ->
     "error: no country service could resolve it".to_string()
 }
 
-pub async fn run(config_path: &Path, explicit: bool) -> Result<u8> {
+/// Build the report; the CLI prints it, the panel returns it as JSON.
+pub async fn report(config_path: &Path, explicit: bool) -> Result<(String, Vec<String>)> {
     let cfg = config::load(config_path, explicit)?;
     let timeout = Duration::from_secs(cfg.ip_check.timeout_secs.max(1));
     let client = reqwest::Client::builder().timeout(timeout).build()?;
@@ -403,7 +404,7 @@ pub async fn run(config_path: &Path, explicit: bool) -> Result<u8> {
         None => None,
     };
 
-    let report = LeakReport {
+    let leak_report = LeakReport {
         service_answers,
         ipv6_answers,
         route_answers,
@@ -417,7 +418,11 @@ pub async fn run(config_path: &Path, explicit: bool) -> Result<u8> {
         reputation,
     };
 
-    let (text, problems) = report.render();
+    Ok(leak_report.render())
+}
+
+pub async fn run(config_path: &Path, explicit: bool) -> Result<u8> {
+    let (text, problems) = report(config_path, explicit).await?;
     print!("{text}");
     Ok(if problems.is_empty() { 0 } else { 4 })
 }

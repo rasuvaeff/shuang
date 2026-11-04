@@ -71,7 +71,8 @@ pub fn parse(lines: &[String], since_secs: u64) -> WeeklyStats {
     stats
 }
 
-pub fn run(config_path: &Path, tail: usize) -> Result<u8> {
+/// Render the weekly summary; the CLI prints it, the panel returns it.
+pub fn summary(config_path: &Path, tail: usize) -> Result<String> {
     let lines = if tail == 0 {
         events::read_tail(config_path, usize::MAX)?
     } else {
@@ -81,20 +82,29 @@ pub fn run(config_path: &Path, tail: usize) -> Result<u8> {
     let week = 7 * 24 * 3600;
     let stats = parse(&lines, now.saturating_sub(week));
 
-    println!("Last 7 days ({} history lines):", lines.len());
-    println!("  freezes: {}", stats.freezes);
-    println!("  resumes: {}", stats.resumes);
-    println!("  closes (allowed IP never returned): {}", stats.closes);
+    let mut out = String::new();
+    out.push_str(&format!("Last 7 days ({} history lines):\n", lines.len()));
+    out.push_str(&format!("  freezes: {}\n", stats.freezes));
+    out.push_str(&format!("  resumes: {}\n", stats.resumes));
+    out.push_str(&format!(
+        "  closes (allowed IP never returned): {}\n",
+        stats.closes
+    ));
     match stats.avg_freeze_secs {
-        Some(avg) => println!("  average freeze duration: {avg}s"),
-        None => println!("  average freeze duration: n/a (no freeze/resume pairs)"),
+        Some(avg) => out.push_str(&format!("  average freeze duration: {avg}s\n")),
+        None => out.push_str("  average freeze duration: n/a (no freeze/resume pairs)\n"),
     }
     if !stats.per_app.is_empty() {
-        println!("  per app:");
+        out.push_str("  per app:\n");
         for (app, count) in &stats.per_app {
-            println!("    {app}: {count}");
+            out.push_str(&format!("    {app}: {count}\n"));
         }
     }
+    Ok(out)
+}
+
+pub fn run(config_path: &Path, tail: usize) -> Result<u8> {
+    print!("{}", summary(config_path, tail)?);
     Ok(0)
 }
 

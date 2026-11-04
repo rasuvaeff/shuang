@@ -35,6 +35,11 @@ pub enum Command {
         /// two-letter country code ("NL").
         value: String,
     },
+    /// Remove an allowlist entry from state.toml (same as the panel's ×).
+    Deny {
+        /// The exact IP, subnet, or country code to remove.
+        value: String,
+    },
     /// Run a command under the kill switch.
     ///
     /// The command and its whole process tree are frozen while the external IP
@@ -55,6 +60,9 @@ pub enum Command {
         /// Skip desktop notifications (with --no-tray for fully headless runs).
         #[arg(long)]
         no_notify: bool,
+        /// Do not serve the local settings panel.
+        #[arg(long)]
+        no_panel: bool,
     },
     /// One-button leak report: every IP service individually, the AI services'
     /// own edge (/cdn-cgi/trace), timezone, proxy environment, gateway MAC.
@@ -82,6 +90,12 @@ pub enum Command {
     /// Environment diagnostics: config, IP quorum, country, timezone,
     /// gateway MAC, D-Bus. Exit 0 healthy, 4 problems found.
     Doctor,
+    /// Close a leak where the OS allows it: disable-ipv6, enable-ipv6,
+    /// dns-public. Prints the applied change or the exact sudo command.
+    Fix {
+        /// Which fix to apply: disable-ipv6, enable-ipv6, dns-public.
+        kind: String,
+    },
 }
 
 #[cfg(test)]

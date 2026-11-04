@@ -20,9 +20,50 @@ pub fn spawn(tx: UnboundedSender<()>) {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn spawn(_tx: UnboundedSender<()>) {
-    // macOS/Windows network events come with the 0.2 tray integration.
+pub fn spawn(tx: UnboundedSender<()>) {
+    // macOS/Windows: no netlink; poll the local network configuration once a
+    // second (interface list, MACs, addresses — cheap, local, no unsafe COM/
+    // objc bindings) and emit on any change. The IP re-check that follows
+    // still decides — this only removes the poll-interval latency.
+    std::thread::spawn(move || {
+        use std::collections::BTreeMap;
+
+        use sysinfo::Networks;
+
+        let mut networks = Networks::new_with_refreshed_list();
+        let mut previous = signature(&networks);
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            networks.refresh(true);
+            let current = signature(&networks);
+            if current != previous {
+                previous = current;
+                if tx.send(()).is_err() {
+                    return;
+                }
+            }
+        }
+    });
 }
+
+#[cfg(not(target_os = "linux"))]
+fn signature(networks: &sysinfo::Networks) -> BTreeMapSignature {
+    use std::collections::BTreeMap;
+
+    let mut sig: BTreeMap<String, (String, Vec<String>)> = BTreeMap::new();
+    for (name, data) in networks {
+        let ips = data
+            .ip_networks()
+            .iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>();
+        sig.insert(name.to_string(), (data.mac_address().to_string(), ips));
+    }
+    sig
+}
+
+#[cfg(not(target_os = "linux"))]
+type BTreeMapSignature = std::collections::BTreeMap<String, (String, Vec<String>)>;
 
 #[cfg(target_os = "linux")]
 fn watch(tx: &UnboundedSender<()>) -> anyhow::Result<()> {

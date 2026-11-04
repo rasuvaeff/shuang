@@ -8,7 +8,8 @@ use anyhow::Result;
 
 use crate::{config, ipcheck, trusted};
 
-pub async fn run(config_path: &Path, explicit: bool) -> Result<u8> {
+/// Collect checks; the CLI prints them, the panel returns them as JSON.
+pub async fn check(config_path: &Path, explicit: bool) -> (Vec<(bool, String)>, Vec<String>) {
     let mut problems: Vec<String> = Vec::new();
     let mut checks: Vec<(bool, String)> = Vec::new();
 
@@ -23,8 +24,7 @@ pub async fn run(config_path: &Path, explicit: bool) -> Result<u8> {
         }
         Err(err) => {
             checks.push((false, format!("config readable: {err:#}")));
-            print_checks(&checks, &problems);
-            return Ok(4);
+            return (checks, problems);
         }
     };
 
@@ -102,20 +102,27 @@ pub async fn run(config_path: &Path, explicit: bool) -> Result<u8> {
         }
     }
 
-    print_checks(&checks, &problems);
-    Ok(if problems.is_empty() { 0 } else { 4 })
+    (checks, problems)
 }
 
-fn print_checks(checks: &[(bool, String)], problems: &[String]) {
+pub fn render_checks(checks: &[(bool, String)], problems: &[String]) -> String {
+    let mut out = String::new();
     for (ok, text) in checks {
-        println!("{} {text}", if *ok { "ok " } else { "!!" });
+        out.push_str(&format!("{} {text}\n", if *ok { "ok " } else { "!!" }));
     }
     if !problems.is_empty() {
-        println!("Problems:");
+        out.push_str("Problems:\n");
         for p in problems {
-            println!("  ! {p}");
+            out.push_str(&format!("  ! {p}\n"));
         }
     } else {
-        println!("All checks passed.");
+        out.push_str("All checks passed.\n");
     }
+    out
+}
+
+pub async fn run(config_path: &Path, explicit: bool) -> Result<u8> {
+    let (checks, problems) = check(config_path, explicit).await;
+    print!("{}", render_checks(&checks, &problems));
+    Ok(if problems.is_empty() { 0 } else { 4 })
 }

@@ -25,7 +25,7 @@ use crate::{
 const OWNER: &str = "run";
 
 pub async fn run(config_path: &Path, command: Vec<String>, explicit: bool) -> Result<u8> {
-    let cfg = config::load(config_path, explicit)?;
+    let mut cfg = config::load(config_path, explicit)?;
     if cfg.ip_check.interval_secs == 0 {
         bail!("ip_check.interval_secs must be at least 1");
     }
@@ -33,6 +33,7 @@ pub async fn run(config_path: &Path, command: Vec<String>, explicit: bool) -> Re
         eprintln!("shuang: warning: {warning}");
     }
     let state = config::load_state(config_path);
+    cfg.apply_overrides(&state);
     let (mut list, profile_warning) = net::effective(&cfg, &state);
     if let Some(w) = profile_warning {
         eprintln!("shuang: {w}");

@@ -5,7 +5,7 @@
 
 use std::{net::IpAddr, path::Path, str::FromStr};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use ipnet::IpNet;
 
 use crate::config;
@@ -53,6 +53,31 @@ pub fn run(config_path: &Path, value: &str) -> Result<u8> {
     bail!("not an IP address, CIDR subnet, or two-letter country code: {value:?}");
 }
 
+/// Remove an allowlist entry from `state.toml` (the panel's "×" button).
+/// Mirrors the parse order of `run`: IP → subnet → country.
+pub fn remove(config_path: &Path, value: &str) -> Result<bool> {
+    let mut state = config::load_state(config_path);
+    let removed = if let Ok(ip) = IpAddr::from_str(value) {
+        let before = state.allow.ips.len();
+        state.allow.ips.retain(|i| *i != ip);
+        state.allow.ips.len() != before
+    } else if let Ok(net) = IpNet::from_str(value) {
+        let before = state.allow.nets.len();
+        state.allow.nets.retain(|n| *n != net);
+        state.allow.nets.len() != before
+    } else {
+        let country = value.trim().to_ascii_uppercase();
+        let before = state.allow.countries.len();
+        state.allow.countries.retain(|c| *c != country);
+        state.allow.countries.len() != before
+    };
+
+    if removed {
+        config::save_state(config_path, &state).context("cannot write state.toml")?;
+    }
+    Ok(removed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,5 +113,24 @@ mod tests {
         assert!(run(&cfg_path, "not a thing").is_err());
         assert!(run(&cfg_path, "NLD").is_err());
         assert!(config::load_state(&cfg_path).allow.ips.is_empty());
+    }
+
+    #[test]
+    fn remove_deletes_only_the_matching_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("config.toml");
+        run(&cfg_path, "203.0.113.10").unwrap();
+        run(&cfg_path, "203.0.113.11").unwrap();
+        run(&cfg_path, "NL").unwrap();
+
+        assert!(remove(&cfg_path, "203.0.113.10").unwrap());
+        let state = config::load_state(&cfg_path);
+        assert_eq!(state.allow.ips.len(), 1);
+        assert_eq!(state.allow.countries, ["NL"]);
+
+        // Removing a non-existing entry reports false and writes nothing.
+        assert!(!remove(&cfg_path, "198.51.100.1").unwrap());
+        assert!(remove(&cfg_path, "nl").unwrap()); // case-insensitive
+        assert!(config::load_state(&cfg_path).allow.countries.is_empty());
     }
 }

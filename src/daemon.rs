@@ -11,7 +11,7 @@
 //! (`shuang events`), state changes go to the tray and to desktop
 //! notifications with anti-noise debouncing.
 
-use std::{path::Path, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use anyhow::{Result, bail};
 use sysinfo::System;
@@ -23,14 +23,20 @@ use crate::{
     net::{self, Allowlist},
     netwatch,
     notify::Notifier,
-    platform, procs,
+    panel, platform, procs,
     supervisor::{Frozen, Shutdown},
     tray::{self, TrayHandle},
     trusted,
 };
 
-pub async fn run(config_path: &Path, explicit: bool, no_tray: bool, no_notify: bool) -> Result<u8> {
-    let cfg = config::load(config_path, explicit)?;
+pub async fn run(
+    config_path: &Path,
+    explicit: bool,
+    no_tray: bool,
+    no_notify: bool,
+    no_panel: bool,
+) -> Result<u8> {
+    let mut cfg = config::load(config_path, explicit)?;
     if cfg.ip_check.interval_secs == 0 {
         bail!("ip_check.interval_secs must be at least 1");
     }
@@ -41,6 +47,7 @@ pub async fn run(config_path: &Path, explicit: bool, no_tray: bool, no_notify: b
         eprintln!("shuang: warning: {warning}");
     }
     let state = config::load_state(config_path);
+    cfg.apply_overrides(&state);
     let (global_list, profile_warning) = net::effective(&cfg, &state);
     if let Some(w) = profile_warning {
         eprintln!("shuang: {w}");
@@ -68,6 +75,18 @@ pub async fn run(config_path: &Path, explicit: bool, no_tray: bool, no_notify: b
     let mut notifier = Notifier::desktop(!no_notify);
     tray.status(tray::Status::Ok, "starting…").await;
 
+    let panel_shared = panel::shared();
+    let panel = panel::spawn(
+        Arc::clone(&panel_shared),
+        config_path.to_path_buf(),
+        no_panel,
+    )
+    .await;
+    if let Some(panel) = &panel {
+        eprintln!("shuang: panel: {}", panel.url);
+        tray.set_panel_url(&panel.url).await;
+    }
+
     let (net_tx, mut net_rx) = tokio::sync::mpsc::unbounded_channel();
     netwatch::spawn(net_tx);
     let mut shutdown = Shutdown::new()?;
@@ -88,8 +107,33 @@ pub async fn run(config_path: &Path, explicit: bool, no_tray: bool, no_notify: b
         let summary = tray::summary(&verdict);
         let system = System::new_all();
 
+        // Refresh the panel snapshot (best-effort; a poisoned lock skips a tick).
+        let global_ok = net::allowed(&verdict, &global_list);
+        let apps_running: Vec<String> = cfg
+            .apps
+            .iter()
+            .filter(|app| !procs::find_targets(&app.r#match, &system).is_empty())
+            .map(|app| app.name.clone())
+            .collect();
+        if let Ok(mut snap) = panel_shared.write() {
+            let deny = net::deny_reason(&verdict, &global_list).map(|r| r.message());
+            *snap = panel::Snapshot {
+                ipv4: verdict.ipv4.map(|i| i.to_string()),
+                ipv6: verdict.ipv6.map(|i| i.to_string()),
+                country: verdict.country.clone(),
+                quorum: verdict.quorum,
+                allowed: global_ok,
+                frozen: frozen.len(),
+                apps: apps_running,
+                deny_reason: deny,
+            };
+        }
+
         if quit.load(std::sync::atomic::Ordering::SeqCst) {
             eprintln!("shuang: quit from the tray — resuming frozen processes");
+            if let Some(panel) = &panel {
+                panel.quit.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
             frozen.resume_all();
             let _ = Frozen::persist_cleared(config_path);
             return Ok(0);
