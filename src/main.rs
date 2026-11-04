@@ -31,6 +31,7 @@ mod stats;
 mod supervisor;
 mod tray;
 mod trusted;
+mod update;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -64,6 +65,7 @@ async fn main() -> ExitCode {
         cli::Command::Events { tail } => events_cmd(&path, tail),
         cli::Command::Profile { name } => profile::run(&path, &name),
         cli::Command::Stats { tail } => stats::run(&path, tail),
+        cli::Command::Update => update::run().await,
         cli::Command::Doctor => doctor::run(&path, explicit).await,
         cli::Command::Fix { kind } => match fix::Kind::parse(&kind) {
             Some(kind) => {
