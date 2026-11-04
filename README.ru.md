@@ -243,7 +243,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --all --locked
 ```
 
-Rust 1.85+ (edition 2024). `Cargo.lock` закоммичен (бинарный crate). Тесты
+Rust 1.88+ (edition 2024). `Cargo.lock` закоммичен (бинарный crate). Тесты
 не ходят в реальную сеть — интеграционные гоняются против локального mock
 HTTP-сервера; инварианты allowlist покрыты property-тестами.
 

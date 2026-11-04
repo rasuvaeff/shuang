@@ -225,7 +225,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --all --locked
 ```
 
-Rust 1.85+(edition 2024)。`Cargo.lock` 已提交(二进制 crate)。测试不访问
+Rust 1.88+(edition 2024)。`Cargo.lock` 已提交(二进制 crate)。测试不访问
 真实网络 —— 集成测试针对本地 mock HTTP 服务运行;白名单不变量由 property
 测试覆盖。
 

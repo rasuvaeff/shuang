@@ -94,6 +94,7 @@ mod win {
         fn window_event(
             &mut self,
             _event_loop: &winit::event_loop::ActiveEventLoop,
+            _window_id: winit::window::WindowId,
             _event: winit::event::WindowEvent,
         ) {
         }
@@ -173,6 +174,7 @@ pub fn summary(verdict: &Verdict) -> String {
     format!("{ip} ({country})")
 }
 
+#[cfg(unix)]
 struct ShuangTray {
     status: Status,
     detail: String,
@@ -199,6 +201,7 @@ fn open_url(url: &str) {
     let _ = cmd.spawn();
 }
 
+#[cfg(unix)]
 impl ksni::Tray for ShuangTray {
     fn id(&self) -> String {
         "shuang".to_string()
