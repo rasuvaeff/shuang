@@ -1,0 +1,58 @@
+# shuang
+
+Install:
+
+```bash
+cargo install --git https://github.com/rasuvaeff/shuang
+# or
+curl -fsSL https://raw.githubusercontent.com/rasuvaeff/shuang/master/scripts/install.sh | sh
+```
+
+## Rules
+
+- Fail-closed: unknown IP (no quorum) is never allowed.
+- The whole process tree is frozen (`SIGSTOP`), not just the root pid.
+- The config file is never rewritten: `shuang allow` writes `state.toml`.
+- No network traffic except the configured IP checks.
+
+## API
+
+```
+shuang check [--json] [--config PATH]     # exit 0 allowed, 3 not allowed, 1 error
+shuang allow <ip|cidr|CC> [--config PATH] # append to state.toml
+shuang run [--config PATH] -- <cmd...>    # exit 69 bad IP at start, 75 stopped mid-run
+shuang daemon [--config PATH]             # watch configured apps
+```
+
+`check --json` shape (public contract, additive only):
+
+```json
+{"ipv4": "203.0.113.7", "ipv6": null, "country": "NL", "quorum": true, "allowed": true}
+```
+
+Config (`~/.config/shuang/config.toml`, all keys optional):
+
+```toml
+[[apps]]
+name = "claude-code"
+match = ["claude", "args:claude", "/MyApp.app/"]
+
+[allow]
+ips = ["203.0.113.42"]
+nets = ["185.12.40.0/24"]
+countries = ["NL"]
+
+[ip_check]
+ip_services = [...]      # default: ipify, icanhazip, ident.me, checkip.amazonaws.com
+ipv6_services = [...]
+country_services = ["https://api.country.is"]
+min_agree = 2
+interval_secs = 5
+timeout_secs = 5
+
+[timing]
+grace_secs = 20
+close_secs = 5
+```
+
+Empty allowlist + `run` = the startup IP is allowed (freeze on change).
