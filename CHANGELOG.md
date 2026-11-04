@@ -32,3 +32,14 @@
   (resumes everything), frozen-pid persistence and orphan recovery after a
   crash, country cache per exit subnet, config sanity warnings.
 - Property-based tests for the allowlist invariants (proptest).
+- Local web panel (127.0.0.1 + per-run token, opened from the tray menu):
+  live status, allowlist management (add/remove), profiles, one-click
+  leaks/doctor/stats, leak fixes, and settings (interval, grace, close,
+  quorum, notifications, trust-this-network) written as `state.toml`
+  overrides — `config.toml` is never rewritten.
+- `shuang deny` (CLI twin of the panel's ×) and `shuang fix`
+  (disable-ipv6 / enable-ipv6 / dns-public; without root prints the exact
+  sudo command).
+- Network-change events on macOS/Windows via a local configuration poller;
+  Windows tray via `tray-icon` (Linux keeps KSNI; macOS tray pending a
+  main-thread run loop integration).

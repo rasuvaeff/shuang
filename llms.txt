@@ -30,6 +30,14 @@ shuang doctor [--config PATH]              # environment diagnostics; exit 4 on 
 shuang events [--tail N]
 shuang stats [--tail N]                    # VPN health over 7 days
 shuang profile [<name|none>]               # list / activate / deactivate profiles
+shuang deny <ip|cidr|CC> [--config PATH]   # remove a state.toml allowlist entry
+shuang fix <disable-ipv6|enable-ipv6|dns-public>  # close a leak (or print the sudo command)
+
+# daemon also serves a local web panel (127.0.0.1 + one-time token):
+# live status, allow/deny management, profiles, leaks/doctor/stats buttons,
+# leak fixes, and settings (interval/grace/close/min_agree/notify,
+# trust-this-network). Panel writes go to state.toml; config.toml is never
+# rewritten. Settings in state.toml override config values on load.
 ```
 
 `check --json` shape (public contract, additive only):

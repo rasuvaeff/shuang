@@ -62,7 +62,18 @@ the allowed ones (freeze on *change*). Add entries with `shuang allow`:
 shuang allow 203.0.113.42      # an IP
 shuang allow 185.12.40.0/24    # a subnet
 shuang allow NL                # a whole country
+shuang deny RU                 # remove an entry (same as the panel's ×)
 ```
+
+Close a leak where the OS allows it:
+
+```bash
+shuang fix disable-ipv6   # the classic "VPN tunnels only IPv4" leak
+shuang fix enable-ipv6
+shuang fix dns-public     # prints the exact commands (resolv.conf is never
+                          # rewritten automatically)
+```
+Without root the fix prints the exact sudo command instead of failing.
 
 ### Daemon: watch apps, with a tray icon
 
@@ -106,6 +117,18 @@ timezone, the proxy environment, and the gateway MAC for a
 Claude's supported list, and when the AI edge sees you over IPv6.
 
 Exit codes: `0` clean, `4` leaks found.
+
+### Web panel
+
+`shuang daemon` serves a local settings panel: it prints a one-time URL
+(`http://127.0.0.1:<port>/?token=…`) and the tray menu gets an "Open panel"
+item. The panel shows live status (IP, country, quorum, frozen processes),
+manages the allowlist (add/remove IPs, subnets, countries), switches profiles,
+runs `leaks`/`doctor`/`stats` with one click, offers leak fixes (e.g. disable
+IPv6), and edits settings: check interval, grace/close timeouts, quorum,
+notifications, and "trust this network" (the gateway MAC). Panel edits are
+written to `state.toml` — `config.toml` is never rewritten. The panel binds
+127.0.0.1 only and every request must carry the per-run token.
 
 ### Diagnostics and history
 

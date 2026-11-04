@@ -56,7 +56,17 @@ shuang run -- claude -p "fix the tests"
 shuang allow 203.0.113.42      # 单个 IP
 shuang allow 185.12.40.0/24    # 网段
 shuang allow NL                # 整个国家
+shuang deny RU                 # 删除条目(同面板的 ×)
 ```
+
+在系统允许的情况下关闭泄漏:
+
+```bash
+shuang fix disable-ipv6   # 经典的「VPN 只隧道 IPv4」泄漏
+shuang fix enable-ipv6
+shuang fix dns-public     # 打印确切命令(resolv.conf 绝不会被自动改写)
+```
+没有 root 权限时,fix 会打印确切的 sudo 命令而不是报错。
 
 ### 守护进程:监控应用,带托盘图标
 
@@ -95,6 +105,17 @@ AI 服务自己的边缘看到的地址和**延迟**(claude.ai、chatgpt.com 的
 MAC。出口国家不在 Claude 支持列表、以及边缘通过 IPv6 看到你时,也会警告。
 
 退出码:`0` 干净,`4` 发现问题。
+
+### 网页面板
+
+`shuang daemon` 会启动一个本地设置面板:stderr 中打印一次性链接
+(`http://127.0.0.1:<端口>/?token=…`),托盘菜单中出现「Open panel」项。
+面板显示实时状态(IP、国家、仲裁、被冻结的进程)、管理白名单(增删 IP、
+网段、国家)、切换配置档、一键运行 `leaks`/`doctor`/`stats`、提供泄漏
+修复(例如关闭 IPv6),并可编辑设置:检查间隔、宽限/停止超时、仲裁、
+通知,以及「信任当前网络」(网关 MAC)。面板的所有修改都写入
+`state.toml` —— `config.toml` 永远不会被改写。面板只监听 127.0.0.1,
+每个请求必须携带本次运行的令牌。
 
 ### 诊断与历史
 
