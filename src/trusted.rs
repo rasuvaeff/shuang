@@ -31,6 +31,7 @@ pub fn is_trusted(configured: &[String]) -> bool {
 }
 
 /// Parse `/proc/net/route`: the default route's gateway as dotted quad.
+#[cfg(any(target_os = "linux", test))]
 /// Gateway hex is little-endian (`0100A8C0` → `192.168.0.1`).
 pub fn default_gateway_ip(route_table: &str) -> Option<String> {
     for line in route_table.lines().skip(1) {
@@ -56,6 +57,7 @@ pub fn default_gateway_ip(route_table: &str) -> Option<String> {
 }
 
 /// Parse `/proc/net/arp`: the MAC for the given IP, normalized lowercase.
+#[cfg(any(target_os = "linux", test))]
 pub fn arp_mac(arp_table: &str, ip: &str) -> Option<String> {
     for line in arp_table.lines().skip(1) {
         let cols: Vec<&str> = line.split_whitespace().collect();

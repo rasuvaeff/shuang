@@ -202,6 +202,7 @@ fn open_url(url: &str) {
 }
 
 #[cfg(unix)]
+#[cfg(unix)]
 impl ksni::Tray for ShuangTray {
     fn id(&self) -> String {
         "shuang".to_string()
