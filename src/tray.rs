@@ -57,13 +57,15 @@ mod win {
         out
     }
 
+    /// Everything below stays on the tray thread: tray-icon/muda types are
+    /// `!Send` on Windows (Rc internals). Only the `EventLoopProxy` (Send)
+    /// leaves through the channel.
     struct App {
         tray: Option<tray_icon::TrayIcon>,
         status_item: tray_icon::menu::MenuItem,
         panel_item: tray_icon::menu::MenuItem,
         panel_url: Option<String>,
         quit: Arc<AtomicBool>,
-        status: Status,
     }
 
     impl winit::application::ApplicationHandler<Msg> for App {
@@ -72,7 +74,6 @@ mod win {
         fn user_event(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop, event: Msg) {
             match event {
                 Msg::Status(status, detail) => {
-                    self.status = status;
                     if let Some(tray) = &self.tray {
                         if let Ok(icon) = tray_icon::Icon::from_rgba(icon_rgba(status), 32, 32) {
                             tray.set_icon(Some(icon));
@@ -114,9 +115,25 @@ mod win {
         }
     }
 
-    /// Spawn the tray thread (Windows allows a message loop on any thread).
-    /// Returns the proxy for status updates, or None when the tray failed.
+    /// Spawn the tray on a dedicated thread (Windows allows a message loop
+    /// on any thread). Returns the proxy for status updates, or None when
+    /// the tray failed to start.
     pub fn spawn(quit: Arc<AtomicBool>) -> Option<winit::event_loop::EventLoopProxy<Msg>> {
+        let (tx, rx) = std::sync::mpsc::channel::<Option<winit::event_loop::EventLoopProxy<Msg>>>();
+        std::thread::spawn(move || {
+            let started = build_and_run(Arc::clone(&quit));
+            let _ = tx.send(started);
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(proxy) => proxy,
+            Err(_) => None,
+        }
+    }
+
+    /// Build the loop/menu/tray on THIS thread and run it. The proxy is
+    /// returned to the caller before the loop starts; `None` means the tray
+    /// could not be created. The Ok arm never returns (run_app blocks).
+    fn build_and_run(quit: Arc<AtomicBool>) -> Option<winit::event_loop::EventLoopProxy<Msg>> {
         let event_loop = winit::event_loop::EventLoop::with_user_event()
             .build()
             .ok()?;
@@ -132,7 +149,7 @@ mod win {
         let _ = menu.append(&quit_item);
 
         let Ok(icon) = tray_icon::Icon::from_rgba(icon_rgba(Status::Ok), 32, 32) else {
-            return None;
+            return Some(proxy);
         };
         let tray = tray_icon::TrayIconBuilder::new()
             .with_menu(Box::new(menu))
@@ -141,18 +158,15 @@ mod win {
             .build()
             .ok()?;
 
-        std::thread::spawn(move || {
-            let mut app = App {
-                tray: Some(tray),
-                status_item,
-                panel_item,
-                panel_url: None,
-                quit,
-                status: Status::Ok,
-            };
-            let _ = event_loop.run_app(&mut app);
-        });
-        Some(proxy)
+        let mut app = App {
+            tray: Some(tray),
+            status_item,
+            panel_item,
+            panel_url: None,
+            quit,
+        };
+        let _ = event_loop.run_app(&mut app);
+        None
     }
 }
 
@@ -311,6 +325,7 @@ impl TrayHandle {
             panel_url: None,
             quit: Arc::clone(&quit),
         };
+        #[cfg(unix)]
         use ksni::TrayMethods as _;
         #[cfg(unix)]
         match tray.spawn().await {
