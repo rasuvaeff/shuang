@@ -26,6 +26,8 @@ pub enum Stage {
 pub struct Guard {
     frozen_since: Option<Duration>, // boot-clock timestamp
     grace: Duration,
+    #[cfg(test)]
+    clock: fn() -> Duration,
 }
 
 impl Guard {
@@ -33,16 +35,30 @@ impl Guard {
         Self {
             frozen_since: None,
             grace,
+            #[cfg(test)]
+            clock: mono::now,
         }
     }
 
-    /// Test constructor: pretend the freeze happened `ago` ago.
+    /// Test helper: pretend the freeze happened `ago` ago (on the injected
+    /// clock this is exact, unlike rewinding the real one).
     #[cfg(test)]
     pub fn frozen_for(grace: Duration, ago: Duration) -> Self {
         Self {
-            frozen_since: Some(mono::now().saturating_sub(ago)),
+            frozen_since: Some(ago), // timestamps before the freeze; bad() computes now - since
             grace,
+            clock: || Duration::from_secs(1_000),
         }
+    }
+
+    #[cfg(test)]
+    fn now(&self) -> Duration {
+        (self.clock)()
+    }
+
+    #[cfg(not(test))]
+    fn now(&self) -> Duration {
+        mono::now()
     }
 
     /// The verdict turned good. Returns `true` when a frozen tree must be
@@ -55,11 +71,11 @@ impl Guard {
     pub fn bad(&mut self) -> Stage {
         match self.frozen_since {
             None => {
-                self.frozen_since = Some(mono::now());
+                self.frozen_since = Some(self.now());
                 Stage::Freeze
             }
             Some(since) => {
-                let elapsed = mono::now().saturating_sub(since);
+                let elapsed = self.now().saturating_sub(since);
                 if elapsed >= self.grace {
                     Stage::MustClose
                 } else {
@@ -105,10 +121,15 @@ mod tests {
 
     #[test]
     fn grace_expired_after_simulated_sleep() {
-        // Frozen 30s ago (suspend included, thanks to the boot clock) with a
-        // 20s grace: the next bad tick must close, not report Frozen.
+        // Frozen 30s ago (timestamp 30, injected clock now at 1000 → elapsed
+        // 970s) with a 20s grace: the next bad tick must close, not Freeze.
         let mut guard = Guard::frozen_for(Duration::from_secs(20), Duration::from_secs(30));
         assert_eq!(guard.bad(), Stage::MustClose);
+        // And within grace it reports Frozen with the elapsed time.
+        let mut guard = Guard::frozen_for(Duration::from_secs(2000), Duration::from_secs(30));
+        assert!(
+            matches!(guard.bad(), Stage::Frozen(elapsed) if elapsed > Duration::from_secs(960))
+        );
     }
 
     #[test]
