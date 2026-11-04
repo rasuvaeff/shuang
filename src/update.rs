@@ -185,7 +185,7 @@ fn extract_zip(_archive: &[u8], _into: &Path, _name: &str) -> Result<std::path::
 fn extract_zip(archive: &[u8], into: &Path, binary_name: &str) -> Result<std::path::PathBuf> {
     let mut zip =
         zip::ZipArchive::new(std::io::Cursor::new(archive)).context("cannot open the zip")?;
-    let mut out = into.join("shuang-new.exe");
+    let out = into.join("shuang-new.exe");
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i)?;
         if entry.name().ends_with(binary_name) {
