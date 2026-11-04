@@ -1,6 +1,8 @@
 //! Integration tests drive the built binary against a local mock IP service:
 //! no real network is touched, the quorum logic runs exactly as in production.
 
+#[cfg(unix)]
+use std::time::Duration;
 use std::{
     io::{Read, Write},
     net::TcpListener,
@@ -10,7 +12,6 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
     thread,
-    time::Duration,
 };
 
 /// Minimal HTTP server answering every GET with `body`. Returns the base URL
