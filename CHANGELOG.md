@@ -49,3 +49,6 @@
 - Panel: manage protected apps — `[[apps]]` in `state.toml` merged with the
   config (same never-rewrite-config pattern as settings), plus a picker of
   running processes with auto-generated match patterns.
+- `shuang update`: check GitHub Releases, download the platform binary,
+  verify the published `.sha256`, atomically replace self (explicit,
+  user-initiated — no background checks).
