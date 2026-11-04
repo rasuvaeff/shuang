@@ -60,12 +60,15 @@ mod imp {
     };
 
     fn ntdll_fn(name: &[u8]) -> Option<usize> {
+        use std::ffi::CStr;
         unsafe {
-            let module = GetModuleHandleA(b"ntdll.dll\0".as_ptr());
+            let module = GetModuleHandleA(windows_sys::core::s!("ntdll.dll"));
             if module.is_null() {
                 return None;
             }
-            GetProcAddress(module, name.as_ptr()).map(|f| f as usize)
+            // `name` arrives already nul-terminated (b"NtSuspendProcess\0").
+            let name = CStr::from_bytes_with_nul(name).ok()?;
+            GetProcAddress(module, name.as_ptr() as *const u8).map(|f| f as usize)
         }
     }
 
@@ -127,7 +130,8 @@ mod imp {
     }
 
     unsafe fn TerminateProcess_Thunk(handle: HANDLE) -> i32 {
-        windows_sys::Win32::System::Threading::TerminateProcess(handle, 1)
+        // Edition 2024: an `unsafe fn` body is no longer an implicit unsafe block.
+        unsafe { windows_sys::Win32::System::Threading::TerminateProcess(handle, 1) }
     }
 
     fn suspend_fn() -> Option<NtSuspendResume> {

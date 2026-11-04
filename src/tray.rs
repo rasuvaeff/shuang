@@ -21,6 +21,7 @@ pub enum Status {
 }
 
 impl Status {
+    #[cfg(unix)]
     fn icon_name(self) -> &'static str {
         // Stock freedesktop icon names present in Ubuntu's theme.
         match self {
