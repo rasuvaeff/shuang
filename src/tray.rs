@@ -95,16 +95,16 @@ impl ksni::Tray for ShuangTray {
 /// Handle to the (possibly headless) tray.
 #[derive(Clone)]
 pub struct TrayHandle {
-    inner: Option<ksni::blocking::Handle<ShuangTray>>,
+    inner: Option<ksni::Handle<ShuangTray>>,
     quit: Arc<AtomicBool>,
 }
 
 impl TrayHandle {
     /// Spawn the tray unless suppressed. No D-Bus session (servers, plain
     /// SSH) → headless with a warning, never an error: protection runs on.
-    pub fn spawn(no_tray: bool) -> Self {
-        use ksni::blocking::TrayMethods as _;
-
+    /// Async end to end: ksni's async API runs on our tokio runtime (the
+    /// `blocking` facade panics when called from inside a runtime).
+    pub async fn spawn(no_tray: bool) -> Self {
         let quit = Arc::new(AtomicBool::new(false));
         if no_tray {
             return Self { inner: None, quit };
@@ -115,7 +115,8 @@ impl TrayHandle {
             detail: "starting…".to_string(),
             quit: Arc::clone(&quit),
         };
-        match tray.spawn() {
+        use ksni::TrayMethods as _;
+        match tray.spawn().await {
             Ok(handle) => Self {
                 inner: Some(handle),
                 quit,
@@ -128,13 +129,15 @@ impl TrayHandle {
     }
 
     /// Update the icon and the status line. Headless: no-op.
-    pub fn status(&self, status: Status, detail: &str) {
+    pub async fn status(&self, status: Status, detail: &str) {
         if let Some(handle) = &self.inner {
             let detail = detail.to_string();
-            handle.update(move |tray| {
-                tray.status = status;
-                tray.detail = detail;
-            });
+            handle
+                .update(move |tray| {
+                    tray.status = status;
+                    tray.detail = detail;
+                })
+                .await;
         }
     }
 
@@ -148,12 +151,12 @@ impl TrayHandle {
 mod tests {
     use super::*;
 
-    #[test]
-    fn headless_handle_is_a_silent_no_op() {
-        let handle = TrayHandle::spawn(true);
+    #[tokio::test]
+    async fn headless_handle_is_a_silent_no_op() {
+        let handle = TrayHandle::spawn(true).await;
         assert!(handle.inner.is_none());
         // Must not panic:
-        handle.status(Status::Frozen, "no D-Bus");
+        handle.status(Status::Frozen, "no D-Bus").await;
         assert!(!handle.quit_flag().load(Ordering::SeqCst));
     }
 

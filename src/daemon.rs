@@ -63,10 +63,10 @@ pub async fn run(config_path: &Path, explicit: bool, no_tray: bool, no_notify: b
     let mut guards: Vec<Guard> = cfg.apps.iter().map(|_| Guard::new(grace)).collect();
     let mut frozen = Frozen::recover(config_path);
 
-    let tray = TrayHandle::spawn(no_tray);
+    let tray = TrayHandle::spawn(no_tray).await;
     let quit = tray.quit_flag();
     let mut notifier = Notifier::desktop(!no_notify);
-    tray.status(tray::Status::Ok, "starting…");
+    tray.status(tray::Status::Ok, "starting…").await;
 
     let (net_tx, mut net_rx) = tokio::sync::mpsc::unbounded_channel();
     netwatch::spawn(net_tx);
@@ -106,7 +106,8 @@ pub async fn run(config_path: &Path, explicit: bool, no_tray: bool, no_notify: b
                     log_event(config_path, "resume", "trusted network");
                 }
             }
-            tray.status(tray::Status::Ok, &format!("{summary} — trusted network"));
+            tray.status(tray::Status::Ok, &format!("{summary} — trusted network"))
+                .await;
             wait_tick(
                 interval,
                 &mut net_rx,
@@ -192,9 +193,9 @@ pub async fn run(config_path: &Path, explicit: bool, no_tray: bool, no_notify: b
         }
 
         if any_frozen {
-            tray.status(tray::Status::Frozen, &worst_detail);
+            tray.status(tray::Status::Frozen, &worst_detail).await;
         } else {
-            tray.status(tray::Status::Ok, &summary);
+            tray.status(tray::Status::Ok, &summary).await;
         }
 
         wait_tick(

@@ -8,7 +8,27 @@
   `daemon` (watch configured apps).
 - Quorum-based IPv4 + IPv6 checks with fail-closed evaluation; IPv6 leak
   detection; freeze/resume of whole process trees via `SIGSTOP`/`SIGCONT`
-  on Linux and macOS.
+  on Linux and macOS, `NtSuspendProcess` on Windows.
 - A missing config file at the default location falls back to built-in
   defaults (first run works with no setup); an explicitly passed `--config`
   that does not exist is an error, not a silent default.
+- Tray icon (Linux/KSNI): status color, IP/country tooltip, freeze reason
+  and grace countdown in the menu, Quit that resumes everything.
+- Desktop notifications with anti-noise: a short VPN blink produces one
+  quiet "blinked for Ns" notification on recovery; freezes longer than 60s
+  alert once.
+- `shuang leaks`: per-service IP answers, AI services' own edge
+  (`/cdn-cgi/trace`) with latency, split-routing detection (dual-stack
+  aware), DNS resolvers with country, exit IP reputation
+  (residential/datacenter/proxy flags via ip-api.com), timezone, proxy
+  environment, gateway MAC; warns on non-supported Claude exit countries
+  and IPv6-visible edges. Exit code 4.
+- `shuang doctor` (environment diagnostics) and `shuang stats` (VPN health
+  from history.log) and `shuang events`.
+- Per-app allowlist rules (`[apps.allow]`), allowlist profiles
+  (`[profiles.name]` + `shuang profile`), trusted networks by gateway MAC.
+- Reliability: netlink instant re-check on network changes (Linux),
+  suspend-aware grace timer (`CLOCK_BOOTTIME`), clean exit on Ctrl+C/SIGTERM
+  (resumes everything), frozen-pid persistence and orphan recovery after a
+  crash, country cache per exit subnet, config sanity warnings.
+- Property-based tests for the allowlist invariants (proptest).

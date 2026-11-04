@@ -21,8 +21,8 @@ pauses Claude Code and lets it continue from the same place, session intact.
 
 ## Install
 
-Requires `git`-less setup: just a binary. Linux and macOS today; Windows is
-planned for 0.2 together with the tray icon.
+Linux and macOS today; Windows support (suspend via `NtSuspendProcess`) is
+compiled in and being verified in CI.
 
 ### One-line (Linux & macOS)
 
@@ -32,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/rasuvaeff/shuang/master/scripts/ins
 
 The download is verified against the `.sha256` published with the release; a
 mismatch aborts the install. Override the location with `INSTALL_DIR=…`, pin a
-version with `VERSION=vX.Y.Z` (see the release page).
+version with `VERSION=vX.Y.Z`.
 
 ### Cargo
 
@@ -52,16 +52,33 @@ shuang run -- claude -p "fix the tests"
 - IP goes bad **mid-run** → the whole process tree (MCP servers, `curl`,
   `git`, …) is frozen; if the allowed IP returns within the grace period, the
   command continues — otherwise it is stopped, exit code **75**;
+- Ctrl+C → everything frozen is **resumed** before shuang exits;
 - otherwise the exit code is the command's own.
 
-With an **empty allowlist** the first run remembers the startup IP as the
-allowed one (freeze on *change*). Add entries with `shuang allow`:
+With an **empty allowlist** the first run remembers the startup addresses as
+the allowed ones (freeze on *change*). Add entries with `shuang allow`:
 
 ```bash
 shuang allow 203.0.113.42      # an IP
 shuang allow 185.12.40.0/24    # a subnet
 shuang allow NL                # a whole country
 ```
+
+### Daemon: watch apps, with a tray icon
+
+```bash
+shuang daemon            # tray icon + desktop notifications
+shuang daemon --no-tray --no-notify   # fully headless (servers)
+```
+
+The tray shows the status color (green/orange), the IP and country in the
+tooltip, the freeze reason and grace countdown in the menu. Quit from the
+menu resumes everything. On GNOME the icon needs the AppIndicator extension
+(Ubuntu ships it); KDE/XFCE/Cinnamon work natively.
+
+**Notifications are anti-noise by design:** a short blip produces ONE quiet
+"VPN blinked for 8s" notification on recovery — not two popups; a freeze
+longer than 60s alerts once.
 
 ### One-shot check
 
@@ -72,83 +89,128 @@ shuang check --json   # {"ipv4": "...", "ipv6": "...", "country": "NL", "quorum"
 
 Exit codes: `0` allowed, `3` not allowed, `1` error.
 
-### Daemon: watch apps
+### Leak report
+
+```bash
+shuang leaks
+```
+
+One command shows: what every IP service sees **individually** (disagreement
+= a problem), the IPv6 exit, the address and **latency** the AI services' own
+edge sees (`/cdn-cgi/trace` of claude.ai, chatgpt.com, … — catches split
+routing), the **DNS resolvers** and their countries (a resolver in another
+country is a DNS leak), the **exit IP reputation** (residential vs
+datacenter, proxy/Tor flags — the "IP purity" risk checks), the local
+timezone, the proxy environment, and the gateway MAC for a
+`trusted_networks` entry. Also warns when the exit country is not on
+Claude's supported list, and when the AI edge sees you over IPv6.
+
+Exit codes: `0` clean, `4` leaks found.
+
+### Diagnostics and history
+
+```bash
+shuang doctor    # config, quorum, country, timezone, gateway, D-Bus — exit 4 on problems
+shuang events    # freeze/resume/close history (history.log next to the config)
+shuang stats     # VPN health: freezes, closes, average freeze duration over 7 days
+shuang profile   # list / activate allowlist profiles
+```
+
+## Config
+
+`~/.config/shuang/config.toml` — missing file means built-in defaults
+(an explicitly passed `--config` that is missing is an error, not defaults).
 
 ```toml
-# ~/.config/shuang/config.toml
 [[apps]]
 name = "claude-code"
 match = ["claude", "args:claude"]   # process name / path substring / args: substring
+[apps.allow]                        # optional per-app rules on top of the global ones
+countries = ["NL"]                  # Claude only from NL, Cursor may allow more
 
-[allow]
+[[apps]]
+name = "cursor"
+match = ["cursor", "args:cursor"]
+
+[allow]                             # global allowlist
 countries = ["NL"]
+nets = ["185.12.40.0/24"]
 
 [ip_check]
-min_agree = 2        # at least 2 services must name the same IP
-interval_secs = 5
+interval_secs = 5                   # poll backstop; netlink events react instantly
+timeout_secs = 5
+min_agree = 2                       # ≥ services must name the same IPv4
+ip_services = [...]                 # default: ipify, icanhazip, ident.me, checkip.amazonaws.com
+ipv6_services = [...]
+country_services = ["https://api.country.is"]
 
 [timing]
-grace_secs = 20      # how long a frozen tree waits for the right IP
-close_secs = 5       # polite stop before a forced kill
+grace_secs = 20                     # how long a frozen tree waits for the right IP
+close_secs = 5                      # polite stop before a forced kill
+
+[profiles.work]                     # `shuang profile work` activates
+countries = ["NL", "DE"]
+
+trusted_networks = ["aa:bb:cc:dd:ee:ff"]   # gateway MACs where protection is off (home/office)
 ```
 
-```bash
-shuang daemon
-```
+**Per-app rules** are independent: one app can be frozen while another keeps
+running. **Trusted networks** are recognized by the router's MAC — at home
+protection is off, in a café it is back on (Linux; fails closed elsewhere).
+**Profiles** switch allowlist sets in one command; the selection lives in
+`state.toml`, your commented config is never rewritten.
 
-## How the check works
+## Reliability model
 
-Every `interval_secs` the configured services are asked concurrently for the
-caller's IPv4 **and** IPv6 address. An answer counts only when `min_agree`
-services agree — fewer agreeing answers means *unknown*, and **unknown is
-never allowed** (fail-closed). A direct IPv6 route that the VPN does not
-tunnel is caught by the separate IPv6 check.
-
-Runtime allowlist entries (`shuang allow`) are stored in `state.toml` next to
-the config — your commented `config.toml` is never rewritten. No config file
-yet? Everything works with built-in defaults (first run = freeze on change);
-an explicitly passed `--config` that is missing is an error, not defaults.
+- **Fail-closed:** an unknown verdict (no quorum, tie, timeouts) is never
+  allowed. No exceptions.
+- **Instant reaction (Linux):** netlink route/address/link events trigger an
+  immediate re-check — no 5s window after a network change.
+- **Suspend-aware timing:** the grace timer uses `CLOCK_BOOTTIME`, so a
+  laptop sleep does not eat the grace period.
+- **Clean exit:** Ctrl+C/SIGTERM resumes everything frozen.
+- **Crash recovery:** the frozen pid set is persisted to `state.toml`; the
+  next run resumes "frozen orphans" left by a killed shuang.
+- **IPv6 leak detection:** a direct IPv6 route the VPN does not tunnel fails
+  the verdict.
+- **Quorum:** the country is cached per exit subnet (/24), so one flaky
+  country-service answer does not re-freeze a confirmed exit.
 
 ## What shuang sends over the network
 
-Only the IP checks you configured (defaults: `api.ipify.org`,
-`ipv4.icanhazip.com`, `v4.ident.me`, `checkip.amazonaws.com`, and the IPv6
-counterparts; country: `api.country.is`). No telemetry, no update pings, no
-server of ours. Point `ip_services` at your own endpoint that answers with
-plain-text IPs if you prefer.
-
-## Platform support
-
-| Platform | Status |
-|---|---|
-| Linux | ✅ v0.1 |
-| macOS | ✅ v0.1 |
-| Windows | 🚧 0.2 (with tray + `NtSuspendProcess`) |
-| HarmonyOS PC | 📋 possible later via the Rust `aarch64-unknown-linux-ohos` target — not planned yet |
-
-v0.1 targets servers, CI, and terminals (headless). The tray icon, network
-event subscription (instant reaction instead of polling), and Telegram
-notifications are on the roadmap — the cloud/Telegram parts of proprietary
-tools are intentionally out of scope for the core.
+Only the checks you configured (defaults: `api.ipify.org`,
+`ipv4.icanhazip.com`, `v4.ident.me`, `checkip.amazonaws.com`, the IPv6
+counterparts, `api.country.is`; the leak report also asks `ip-api.com` for
+the exit IP's reputation). No telemetry, no update pings, no server of ours.
+Point `ip_services` at your own plain-text endpoint if you prefer.
 
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
-| `0` | allowed / command finished successfully |
+| `0` | allowed / success / clean |
 | `1` | error (bad config, cannot start the command, …) |
 | `3` | `check`: current IP not allowed |
+| `4` | `leaks`/`doctor`: problems found |
 | `69` | `run`: IP not allowed at start, command never ran |
 | `75` | `run`: stopped — the allowed IP never came back |
 
+## Platform support
+
+| Platform | Suspend | Tray | Notes |
+|---|---|---|---|
+| Linux | ✅ | ✅ (KSNI) | netlink instant reaction, gateway MAC, resolv.conf DNS check |
+| macOS | ✅ | 🚧 | polling only |
+| Windows | ✅ (`NtSuspendProcess`) | 🚧 | being verified in CI |
+| HarmonyOS PC | 📋 | — | possible later via `aarch64-unknown-linux-ohos` |
+
 ## Security notes
 
-- A suspended process sends nothing, but the freeze happens milliseconds
-  *after* the network change: for a hard "not a single packet" guarantee,
-  combine `shuang` with your VPN client's network-level kill switch — this
-  tool complements it, it does not replace it.
-- Processes running as root/system services are not touched; `shuang` works
-  with the privileges of the user who started it.
+- A suspended process sends nothing, but the freeze happens after the network
+  change (milliseconds with netlink): for a hard "not a single packet"
+  guarantee, combine `shuang` with your VPN client's network-level kill
+  switch — this tool complements it, not replaces it.
+- Processes running as root/system services are not touched.
 - `daemon` matches processes by name — an attacker process named like your
   app is out of scope for v0.1.
 
@@ -160,7 +222,9 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --all --locked
 ```
 
-Rust 1.85+ (edition 2024). `Cargo.lock` is committed (binary crate).
+Rust 1.85+ (edition 2024). `Cargo.lock` is committed (binary crate). Tests
+never touch the real network — integration tests run against a local mock
+HTTP service; the allowlist invariants are covered by property-based tests.
 
 ## License
 
