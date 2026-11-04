@@ -17,8 +17,8 @@ use crate::{
     platform, procs,
 };
 
-pub async fn run(config_path: &Path, command: Vec<String>) -> Result<u8> {
-    let cfg = config::load(config_path)?;
+pub async fn run(config_path: &Path, command: Vec<String>, explicit: bool) -> Result<u8> {
+    let cfg = config::load(config_path, explicit)?;
     if cfg.ip_check.interval_secs == 0 {
         bail!("ip_check.interval_secs must be at least 1");
     }

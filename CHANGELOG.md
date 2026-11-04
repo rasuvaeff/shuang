@@ -9,3 +9,6 @@
 - Quorum-based IPv4 + IPv6 checks with fail-closed evaluation; IPv6 leak
   detection; freeze/resume of whole process trees via `SIGSTOP`/`SIGCONT`
   on Linux and macOS.
+- A missing config file at the default location falls back to built-in
+  defaults (first run works with no setup); an explicitly passed `--config`
+  that does not exist is an error, not a silent default.

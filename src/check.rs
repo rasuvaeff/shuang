@@ -9,8 +9,8 @@ use anyhow::Result;
 
 use crate::{config, ipcheck, net, net::Allowlist};
 
-pub async fn run(config_path: &Path, json: bool) -> Result<u8> {
-    let cfg = config::load(config_path)?;
+pub async fn run(config_path: &Path, json: bool, explicit: bool) -> Result<u8> {
+    let cfg = config::load(config_path, explicit)?;
     let state = config::load_state(config_path);
     let list = Allowlist::merged(&cfg.allow, &state.allow);
     let verdict = ipcheck::check(&cfg.ip_check).await;

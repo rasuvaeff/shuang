@@ -27,12 +27,13 @@ use clap::Parser;
 async fn main() -> ExitCode {
     let cli = cli::Cli::parse();
     let path = config::resolve_path(&cli.config);
+    let explicit = cli.config.is_some();
 
     let code = match cli.command {
-        cli::Command::Check { json } => check::run(&path, json).await,
+        cli::Command::Check { json } => check::run(&path, json, explicit).await,
         cli::Command::Allow { value } => allow::run(&path, &value),
-        cli::Command::Run { command } => run::run(&path, command).await,
-        cli::Command::Daemon => daemon::run(&path).await,
+        cli::Command::Run { command } => run::run(&path, command, explicit).await,
+        cli::Command::Daemon => daemon::run(&path, explicit).await,
     };
 
     match code {

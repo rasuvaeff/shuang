@@ -84,6 +84,13 @@ cargo fmt --all -- --check && cargo clippy --all-targets --locked -- -D warnings
 - **`check --json` is a public contract** (like git-gone's): fields are added
   in minors, never renamed or removed outside a major. Currently:
   `ipv4`, `ipv6`, `country`, `quorum`, `allowed` (all nullable/bool).
+- **Config loading is asymmetric by design:** a missing file at the *default*
+  path means first run → `Config::default()` (so `check`/`run` work with zero
+  setup), while a missing *explicit* `--config` path is an error — a typo must
+  never silently run with defaults. Covered by
+  `missing_default_config_falls_back_to_defaults` /
+  `missing_explicit_config_is_an_error`; keep `explicit` plumbed through every
+  mode.
 - **Exit codes are a public contract:** 0 ok, 1 error, 3 check-not-allowed,
   69 run-refused-at-start, 75 run-stopped-mid-run. 69/75 mirror Kordon so
   scripts ported from it keep working.

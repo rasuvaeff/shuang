@@ -141,9 +141,22 @@ pub fn state_path(config_path: &Path) -> PathBuf {
         .join("state.toml")
 }
 
-pub fn load(config_path: &Path) -> Result<Config> {
-    let raw = fs::read_to_string(config_path)
-        .with_context(|| format!("cannot read config {}", config_path.display()))?;
+/// Load the config. A missing file is fine when the path came from the
+/// default location (first run: everything falls back to `Config::default`,
+/// so `check`/`run` work before the user ever writes a config). An explicitly
+/// requested path that does not exist is an error — a typo in `--config`
+/// must not silently run with defaults.
+pub fn load(config_path: &Path, explicit: bool) -> Result<Config> {
+    let raw = match fs::read_to_string(config_path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound && !explicit => {
+            return Ok(Config::default());
+        }
+        Err(err) => {
+            return Err(anyhow::Error::new(err)
+                .context(format!("cannot read config {}", config_path.display())));
+        }
+    };
     let cfg: Config = toml::from_str(&raw)
         .with_context(|| format!("invalid config {}", config_path.display()))?;
     Ok(cfg)
@@ -218,6 +231,22 @@ close_secs = 3
         let raw = "[alllow]\nips = []\n";
         let err = toml::from_str::<Config>(raw).unwrap_err();
         assert!(err.to_string().contains("alllow"));
+    }
+
+    #[test]
+    fn missing_default_config_falls_back_to_defaults() {
+        // First run: no config file at the default location — work with defaults.
+        let missing = Path::new("/nonexistent/shuang/config.toml");
+        let cfg = load(missing, false).unwrap();
+        assert_eq!(cfg.ip_check.min_agree, 2);
+        assert!(cfg.allow.ips.is_empty());
+    }
+
+    #[test]
+    fn missing_explicit_config_is_an_error() {
+        // A typo in --config must not silently run with defaults.
+        let missing = Path::new("/nonexistent/shuang/config.toml");
+        assert!(load(missing, true).is_err());
     }
 
     #[test]

@@ -97,7 +97,8 @@ shuang daemon
 IPv6 检查捕获。
 
 `shuang allow` 的运行时条目存储在配置旁边的 `state.toml` 里 —— 你手写的、带注释
-的 `config.toml` 永远不会被改写。
+的 `config.toml` 永远不会被改写。还没有配置文件?一切使用内置默认值(首次运行
+即"变化时冻结");显式传入的 `--config` 若不存在则是错误,而不是静默使用默认值。
 
 ## shuang 会向网络发送什么
 

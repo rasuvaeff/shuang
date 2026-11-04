@@ -105,7 +105,9 @@ never allowed** (fail-closed). A direct IPv6 route that the VPN does not
 tunnel is caught by the separate IPv6 check.
 
 Runtime allowlist entries (`shuang allow`) are stored in `state.toml` next to
-the config — your commented `config.toml` is never rewritten.
+the config — your commented `config.toml` is never rewritten. No config file
+yet? Everything works with built-in defaults (first run = freeze on change);
+an explicitly passed `--config` that is missing is an error, not defaults.
 
 ## What shuang sends over the network
 
