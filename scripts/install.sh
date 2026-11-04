@@ -140,4 +140,4 @@ esac
 
 printf '==> Installed: '
 "${dest}/shuang" --version
-printf '\nRun "shuang --help" (or "git gone -h") to get started.\n'
+printf '\nRun "shuang --help" (or "shuang -h") to get started.\n'
