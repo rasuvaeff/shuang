@@ -7,11 +7,10 @@
 //! MAC). Other platforms return `None` — trusted networks silently do not
 //! match there, which fails closed (protection stays on).
 
-use std::fs;
-
 /// MAC of the current default gateway, lowercase `aa:bb:cc:dd:ee:ff`.
 #[cfg(target_os = "linux")]
 pub fn gateway_mac() -> Option<String> {
+    use std::fs;
     let route = fs::read_to_string("/proc/net/route").ok()?;
     let gw_ip = default_gateway_ip(&route)?;
     let arp = fs::read_to_string("/proc/net/arp").ok()?;

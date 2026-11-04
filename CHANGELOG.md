@@ -43,3 +43,9 @@
 - Network-change events on macOS/Windows via a local configuration poller;
   Windows tray via `tray-icon` (Linux keeps KSNI; macOS tray pending a
   main-thread run loop integration).
+
+## Planned
+
+- Panel: manage protected apps — `[[apps]]` in `state.toml` merged with the
+  config (same never-rewrite-config pattern as settings), plus a picker of
+  running processes with auto-generated match patterns.

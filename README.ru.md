@@ -1,5 +1,7 @@
 # shuang — 霜 / мороз
 
+**[English](README.md)** · [Русский](README.ru.md)** · [中文](README.zh.md)
+
 **Замораживай приложения, когда падает VPN. Пауза вместо убийства.**
 
 `shuang` — бесплатный open-source kill switch уровня приложения. Пока внешний
@@ -243,7 +245,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --all --locked
 ```
 
-Rust 1.85+ (edition 2024). `Cargo.lock` закоммичен (бинарный crate). Тесты
+Rust 1.88+ (edition 2024). `Cargo.lock` закоммичен (бинарный crate). Тесты
 не ходят в реальную сеть — интеграционные гоняются против локального mock
 HTTP-сервера; инварианты allowlist покрыты property-тестами.
 

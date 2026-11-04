@@ -2,7 +2,7 @@
 name = "shuang"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 authors = ["Victor Razuvaev <rasuvaeff@gmail.com>"]
 license = "GPL-3.0-or-later"
 description = "Freeze apps when the VPN drops: a per-application kill switch that suspends instead of killing"
