@@ -21,7 +21,7 @@ pub enum Status {
 }
 
 impl Status {
-    #[cfg(unix)]
+    #[cfg(any(unix, test))]
     fn icon_name(self) -> &'static str {
         // Stock freedesktop icon names present in Ubuntu's theme.
         match self {
@@ -81,11 +81,11 @@ mod win {
                         }
                         tray.set_tooltip(Some(format!("shuang: {detail}")));
                     }
-                    let _ = self.status_item.set_text(detail);
+                    self.status_item.set_text(detail);
                 }
                 Msg::PanelUrl(url) => {
                     self.panel_url = Some(url);
-                    let _ = self.panel_item.set_enabled(true);
+                    self.panel_item.set_enabled(true);
                 }
             }
         }
@@ -125,10 +125,9 @@ mod win {
             let started = build_and_run(Arc::clone(&quit));
             let _ = tx.send(started);
         });
-        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
-            Ok(proxy) => proxy,
-            Err(_) => None,
-        }
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .ok()
+            .flatten()
     }
 
     /// Build the loop/menu/tray on THIS thread and run it. The proxy is
