@@ -431,9 +431,9 @@ async fn set_profile(
 
 /// Random 32-hex-char token from the OS (/dev/urandom on unix, hash fallback).
 fn random_token() -> String {
-    let mut bytes = [0u8; 16];
     #[cfg(unix)]
     {
+        let mut bytes = [0u8; 16];
         use std::io::Read;
         if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
             let _ = f.read_exact(&mut bytes);
