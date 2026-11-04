@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 — 2026-11-04
 
 - Initial implementation: `run` (kill switch for one command, exit codes
   69/75), `check` (one-shot IP verdict, JSON and human output, exit code 3),
