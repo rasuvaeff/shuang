@@ -40,7 +40,7 @@ impl Guard {
     #[cfg(test)]
     pub fn frozen_for(grace: Duration, ago: Duration) -> Self {
         Self {
-            frozen_since: Some(mono::now() - ago),
+            frozen_since: Some(mono::now().saturating_sub(ago)),
             grace,
         }
     }

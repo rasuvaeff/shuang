@@ -10,10 +10,7 @@
 //! and the daemon keeps working — the tray must never be load-bearing for
 //! protection.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, atomic::AtomicBool};
 
 use crate::ipcheck::Verdict;
 
@@ -125,20 +122,18 @@ mod win {
             .ok()?;
         let proxy = event_loop.create_proxy();
 
-        let status_item =
-            tray_icon::menu::MenuItem::with_id("status", "starting…", false, None).ok()?;
-        let panel_item =
-            tray_icon::menu::MenuItem::with_id("panel", "Open panel", false, None).ok()?;
-        let quit_item =
-            tray_icon::menu::MenuItem::with_id("quit", "Quit shuang", true, None).ok()?;
-        let menu = tray_icon::menu::Menu::new().ok()?;
-        menu.append(&status_item).ok()?;
-        menu.append(&tray_icon::menu::PredefinedMenuItem::separator())
-            .ok()?;
-        menu.append(&panel_item).ok()?;
-        menu.append(&quit_item).ok()?;
+        let status_item = tray_icon::menu::MenuItem::with_id("status", "starting…", false, None);
+        let panel_item = tray_icon::menu::MenuItem::with_id("panel", "Open panel", false, None);
+        let quit_item = tray_icon::menu::MenuItem::with_id("quit", "Quit shuang", true, None);
+        let menu = tray_icon::menu::Menu::new();
+        let _ = menu.append(&status_item);
+        let _ = menu.append(&tray_icon::menu::PredefinedMenuItem::separator());
+        let _ = menu.append(&panel_item);
+        let _ = menu.append(&quit_item);
 
-        let icon = tray_icon::Icon::from_rgba(icon_rgba(Status::Ok), 32, 32).ok()?;
+        let Ok(icon) = tray_icon::Icon::from_rgba(icon_rgba(Status::Ok), 32, 32) else {
+            return None;
+        };
         let tray = tray_icon::TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_tooltip("shuang")
@@ -250,7 +245,7 @@ impl ksni::Tray for ShuangTray {
             StandardItem {
                 label: "Quit shuang".to_string(),
                 activate: Box::new(|tray: &mut Self| {
-                    tray.quit.store(true, Ordering::SeqCst);
+                    tray.quit.store(true, std::sync::atomic::Ordering::SeqCst);
                 }),
                 ..StandardItem::default()
             }
@@ -382,7 +377,7 @@ mod tests {
         assert!(handle.inner.is_none());
         // Must not panic:
         handle.status(Status::Frozen, "no D-Bus").await;
-        assert!(!handle.quit_flag().load(Ordering::SeqCst));
+        assert!(!handle.quit_flag().load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]
