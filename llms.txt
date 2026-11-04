@@ -1,5 +1,7 @@
 # shuang
 
+Freeze apps when the VPN drops: a per-application kill switch that suspends instead of killing. GPL-3.0, no server, no telemetry.
+
 Install:
 
 ```bash
@@ -11,17 +13,23 @@ curl -fsSL https://raw.githubusercontent.com/rasuvaeff/shuang/master/scripts/ins
 ## Rules
 
 - Fail-closed: unknown IP (no quorum) is never allowed.
-- The whole process tree is frozen (`SIGSTOP`), not just the root pid.
-- The config file is never rewritten: `shuang allow` writes `state.toml`.
-- No network traffic except the configured IP checks.
+- The whole process tree is frozen (SIGSTOP / NtSuspendProcess), not just the root pid.
+- The config file is never rewritten: `shuang allow` and profile selection write `state.toml`.
+- Ctrl+C/SIGTERM resumes everything frozen; frozen pids persist for crash recovery.
+- No network traffic except the configured IP/country checks (leaks also asks ip-api.com for reputation).
 
 ## API
 
 ```
-shuang check [--json] [--config PATH]     # exit 0 allowed, 3 not allowed, 1 error
-shuang allow <ip|cidr|CC> [--config PATH] # append to state.toml
-shuang run [--config PATH] -- <cmd...>    # exit 69 bad IP at start, 75 stopped mid-run
-shuang daemon [--config PATH]             # watch configured apps
+shuang check [--json] [--config PATH]      # exit 0 allowed, 3 not allowed, 1 error
+shuang allow <ip|cidr|CC> [--config PATH]  # append to state.toml
+shuang run [--config PATH] -- <cmd...>     # exit 69 bad IP at start, 75 stopped mid-run
+shuang daemon [--no-tray] [--no-notify] [--config PATH]
+shuang leaks [--config PATH]               # per-service, /cdn-cgi-trace, DNS, reputation; exit 4 on problems
+shuang doctor [--config PATH]              # environment diagnostics; exit 4 on problems
+shuang events [--tail N]
+shuang stats [--tail N]                    # VPN health over 7 days
+shuang profile [<name|none>]               # list / activate / deactivate profiles
 ```
 
 `check --json` shape (public contract, additive only):
@@ -30,29 +38,38 @@ shuang daemon [--config PATH]             # watch configured apps
 {"ipv4": "203.0.113.7", "ipv6": null, "country": "NL", "quorum": true, "allowed": true}
 ```
 
-Config (`~/.config/shuang/config.toml`, all keys optional):
+Config (`~/.config/shuang/config.toml`, all keys optional; missing file = defaults):
 
 ```toml
 [[apps]]
 name = "claude-code"
 match = ["claude", "args:claude", "/MyApp.app/"]
+[apps.allow]                  # optional per-app rules (additive union)
+countries = ["NL"]
 
-[allow]
+[allow]                       # global allowlist
 ips = ["203.0.113.42"]
 nets = ["185.12.40.0/24"]
 countries = ["NL"]
 
 [ip_check]
-ip_services = [...]      # default: ipify, icanhazip, ident.me, checkip.amazonaws.com
+ip_services = [...]           # default: ipify, icanhazip, ident.me, checkip.amazonaws.com
 ipv6_services = [...]
 country_services = ["https://api.country.is"]
 min_agree = 2
-interval_secs = 5
+interval_secs = 5             # poll backstop; netlink events react instantly (Linux)
 timeout_secs = 5
 
 [timing]
-grace_secs = 20
+grace_secs = 20               # CLOCK_BOOTTIME-based: survives laptop sleep
 close_secs = 5
+
+[profiles.work]               # `shuang profile work` activates
+countries = ["NL", "DE"]
+
+trusted_networks = ["aa:bb:cc:dd:ee:ff"]  # gateway MACs where protection is off
+
+route_check.services = [...]  # default: claude.ai, api.anthropic.com, chatgpt.com, api.openai.com, www.perplexity.ai
 ```
 
-Empty allowlist + `run` = the startup IP is allowed (freeze on change).
+Empty allowlist + `run` = the startup addresses are allowed (freeze on change).

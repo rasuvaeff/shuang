@@ -9,7 +9,10 @@ the external IP is not on the allowlist, the whole process tree of a protected
 application is suspended (`SIGSTOP` on Unix; `NtSuspendProcess` on Windows in
 0.2), and resumed when the right IP is back. Modes: `run` (kill switch for one
 command, exit 69/75), `check` (one-shot verdict, exit 3), `allow` (persist an
-allowlist entry), `daemon` (watch configured apps). It follows the monorepo's
+allowlist entry), `daemon` (watch configured apps, tray + notifications),
+`leaks` (per-service/edge/DNS/reputation report, exit 4), `doctor`
+(environment diagnostics, exit 4), `events`/`stats` (history and VPN health),
+`profile` (allowlist profiles). It follows the monorepo's
 non-PHP conventions established by `git-gone` (docs, CHANGELOG, SHA-pinned CI)
 and ignores the PHP/Composer rules. Public surface: CLI flags, exit codes,
 config schema, and the `check --json` document.
@@ -92,8 +95,38 @@ cargo fmt --all -- --check && cargo clippy --all-targets --locked -- -D warnings
   `missing_explicit_config_is_an_error`; keep `explicit` plumbed through every
   mode.
 - **Exit codes are a public contract:** 0 ok, 1 error, 3 check-not-allowed,
-  69 run-refused-at-start, 75 run-stopped-mid-run. 69/75 mirror Kordon so
-  scripts ported from it keep working.
+  4 leaks/doctor-problems-found, 69 run-refused-at-start, 75
+  run-stopped-mid-run. 69/75 mirror Kordon so scripts ported from it keep
+  working.
+- **Clean exit and crash recovery are load-bearing.** Ctrl+C/SIGTERM resumes
+  everything frozen (`supervisor::Shutdown` + `Frozen::resume_all`); the
+  frozen pid set persists to `state.toml` on every change and
+  `Frozen::recover` resumes orphans at mode start. Any new freeze path must
+  go through `Frozen` (never raw `platform::suspend`) or recovery breaks.
+- **The tray must never block or panic the runtime.** ksni's *blocking*
+  facade calls `block_on` and panics inside tokio — always use the async API
+  (`TrayHandle::spawn(...).await` / `.status(...).await`). A missing D-Bus
+  degrades to headless with a warning, never an error: protection runs on.
+- **Notifications are anti-noise by contract** (`notify.rs`): a freeze does
+  not notify; a resume under 30s sends ONE low-urgency "blinked for Ns"; a
+  freeze over 60s alerts once. The sink is injected — tests collect strings,
+  never call the desktop.
+- **The grace timer uses `CLOCK_BOOTTIME`** (`mono.rs`), not `Instant`:
+  `Instant` stops during suspend and would unfreeze hours later as
+  "within grace". All timing in `guard.rs` goes through `crate::mono`.
+- **Netlink events mean "verify now", not "freeze now"** (`netwatch.rs`):
+  freezing blindly on any route change produces false freezes. The watcher
+  is best-effort — polling stays as the backstop.
+- **Country cache is keyed by /24 (v4) / /64 (v6)**: one flaky country-service
+  answer must not re-freeze a confirmed exit, but a *different prefix* is a
+  different exit and must be re-verified. Do not widen the key.
+- **Per-app rules are additive unions** (`Allowlist::with_extra`): app rules
+  only widen, never narrow, the global allowlist — a stricter app config is
+  expressed by a stricter global/profile list, not by subtractive rules.
+- **Property tests must keep passing** (`net.rs::properties`): allowed ⇔
+  deny_reason is None; no quorum is never allowed; the allowlist is
+  monotone; country allows are IP-agnostic. A failing property is a design
+  bug, not a flaky test.
 - **Tests never touch the real network.** Integration tests point
   `ip_services` at a local mock HTTP server (`tests/integration.rs`); the
   quorum logic runs exactly as in production. A test that needs the real
