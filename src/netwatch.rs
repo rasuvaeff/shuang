@@ -26,8 +26,6 @@ pub fn spawn(tx: UnboundedSender<()>) {
     // objc bindings) and emit on any change. The IP re-check that follows
     // still decides — this only removes the poll-interval latency.
     std::thread::spawn(move || {
-        use std::collections::BTreeMap;
-
         use sysinfo::Networks;
 
         let mut networks = Networks::new_with_refreshed_list();

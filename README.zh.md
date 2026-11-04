@@ -1,5 +1,7 @@
 # shuang — 霜
 
+**[English](README.md)** · [Русский](README.ru.md) · **[中文](README.zh.md)**
+
 **VPN 掉线时冻结你的应用 —— 暂停,而不是杀掉。**
 
 `shuang` 是一个免费、开源的按应用 kill switch。当你的外部 IP 不在白名单里时,
@@ -225,7 +227,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --all --locked
 ```
 
-Rust 1.85+(edition 2024)。`Cargo.lock` 已提交(二进制 crate)。测试不访问
+Rust 1.88+(edition 2024)。`Cargo.lock` 已提交(二进制 crate)。测试不访问
 真实网络 —— 集成测试针对本地 mock HTTP 服务运行;白名单不变量由 property
 测试覆盖。
 

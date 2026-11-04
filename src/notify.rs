@@ -35,15 +35,24 @@ pub struct Notifier {
 
 impl Notifier {
     pub fn desktop(enabled: bool) -> Self {
-        Self::new(
-            Box::new(|summary, body, urgency| {
-                let mut n = notify_rust::Notification::new();
-                n.summary(summary).body(body);
-                let _ = n.show();
-                let _ = urgency; // notify-rust picks urgency via hint; kept in the trait for future use
-            }),
-            enabled,
-        )
+        #[cfg(unix)]
+        {
+            Self::new(
+                Box::new(|summary, body, urgency| {
+                    let mut n = notify_rust::Notification::new();
+                    n.summary(summary).body(body);
+                    let _ = n.show();
+                    let _ = urgency; // notify-rust sends urgency via hint
+                }),
+                enabled,
+            )
+        }
+        // Windows toasts land with the Windows tray polish; until then the
+        // sink is a silent no-op (the state machine and tests still run).
+        #[cfg(not(unix))]
+        {
+            Self::new(Box::new(|_, _, _| {}), enabled)
+        }
     }
 
     pub fn new(sink: Sink, enabled: bool) -> Self {
