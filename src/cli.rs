@@ -48,7 +48,40 @@ pub enum Command {
     },
     /// Watch the configured apps: freeze while the IP is not allowed, close
     /// after the grace period.
-    Daemon,
+    Daemon {
+        /// Run without the tray icon (servers, SSH sessions).
+        #[arg(long)]
+        no_tray: bool,
+        /// Skip desktop notifications (with --no-tray for fully headless runs).
+        #[arg(long)]
+        no_notify: bool,
+    },
+    /// One-button leak report: every IP service individually, the AI services'
+    /// own edge (/cdn-cgi/trace), timezone, proxy environment, gateway MAC.
+    /// Exit 0 clean, 4 leaks found.
+    Leaks,
+    /// Show the last events from history.log.
+    Events {
+        /// How many events to show (default 20).
+        #[arg(long, default_value_t = 20)]
+        tail: usize,
+    },
+    /// Show or select the active allowlist profile (from [profiles] in the
+    /// config). `shuang profile work` activates it, `shuang profile` lists.
+    Profile {
+        /// Profile name to activate; omit to list. Use "none" to deactivate.
+        name: Option<String>,
+    },
+    /// VPN health from history.log: freeze/close counts and average freeze
+    /// duration over the last 7 days.
+    Stats {
+        /// How many history lines to consider (default: all).
+        #[arg(long)]
+        tail: usize,
+    },
+    /// Environment diagnostics: config, IP quorum, country, timezone,
+    /// gateway MAC, D-Bus. Exit 0 healthy, 4 problems found.
+    Doctor,
 }
 
 #[cfg(test)]

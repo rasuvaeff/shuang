@@ -6,6 +6,7 @@
 
 use std::{collections::HashMap, net::IpAddr, time::Duration};
 
+use ipnet::IpNet;
 use serde::Deserialize;
 
 use crate::config::IpCheckConfig;
@@ -21,6 +22,57 @@ pub struct Verdict {
     pub country: Option<String>,
     /// Whether the IPv4 quorum was met. `false` means "unknown — not allowed".
     pub quorum: bool,
+}
+
+/// Cache of "exit subnet → country" answers for the current session. The
+/// same address always maps to the same country, so a flaky country service
+/// must not re-freeze an otherwise confirmed exit: on a miss we reuse the
+/// last known country for the same subnet. The key is a /24 (IPv4) or /64
+/// (IPv6) — VPN providers rotate addresses inside one prefix, and the country
+/// of a prefix does not change.
+#[derive(Debug, Default)]
+pub struct CountryCache {
+    inner: std::collections::HashMap<IpNet, String>,
+}
+
+fn country_key(ip: IpAddr) -> IpNet {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            IpNet::new(IpAddr::V4(std::net::Ipv4Addr::new(o[0], o[1], o[2], 0)), 24)
+                .expect("valid prefix")
+        }
+        IpAddr::V6(v6) => {
+            let o = v6.octets();
+            let mut seg = [0u8; 16];
+            seg[..8].copy_from_slice(&o[..8]);
+            IpNet::new(IpAddr::V6(std::net::Ipv6Addr::from(seg)), 64).expect("valid prefix")
+        }
+    }
+}
+
+impl CountryCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Fill a verdict's missing country from the cache; remember successful
+    /// answers for next time. Pure — no I/O.
+    pub fn fill(&mut self, verdict: &mut Verdict) {
+        let Some(v4) = verdict.ipv4 else {
+            return;
+        };
+        let key = country_key(v4);
+        match verdict.country.take() {
+            Some(country) => {
+                self.inner.insert(key, country.clone());
+                verdict.country = Some(country);
+            }
+            None => {
+                verdict.country = self.inner.get(&key).cloned();
+            }
+        }
+    }
 }
 
 #[derive(Deserialize)]

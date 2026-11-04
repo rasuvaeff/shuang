@@ -22,6 +22,15 @@ pub struct Config {
     pub allow: AllowConfig,
     pub ip_check: IpCheckConfig,
     pub timing: TimingConfig,
+    /// Named allowlist profiles ("work", "personal"): merged on top of
+    /// `allow` when active. Selected via `shuang profile <name>`.
+    pub profiles: std::collections::BTreeMap<String, AllowConfig>,
+    /// MAC addresses of trusted routers: on these networks protection is off
+    /// (home/office), everywhere else it is on.
+    pub trusted_networks: Vec<String>,
+    /// Split-routing check (`shuang leaks`): asks these services' own edge
+    /// where the request came from.
+    pub route_check: RouteCheckConfig,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -33,6 +42,54 @@ pub struct AppSpec {
     /// containing `/` matches the executable path substring, an `args:`
     /// prefix matches the command line substring.
     pub r#match: Vec<String>,
+    /// Optional per-app allowlist merged on top of the global one (Claude
+    /// only from NL, Cursor from anywhere in the default list, …).
+    pub allow: Option<AllowConfig>,
+}
+
+impl Config {
+    /// Configuration sanity warnings, printed at `run`/`daemon` start.
+    /// Warnings never block the run — they explain surprising behavior.
+    pub fn warnings(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.ip_check.ip_services.is_empty() {
+            out.push(
+                "ip_check.ip_services is empty: the external IP can never be confirmed \
+                 (every verdict will fail closed)"
+                    .to_string(),
+            );
+        } else if self.ip_check.min_agree > self.ip_check.ip_services.len() {
+            out.push(format!(
+                "ip_check.min_agree ({}) is higher than the number of ip_services ({}): \
+                 the quorum can never be met",
+                self.ip_check.min_agree,
+                self.ip_check.ip_services.len()
+            ));
+        }
+        if self.ip_check.ipv6_services.is_empty() {
+            out.push(
+                "ip_check.ipv6_services is empty: a direct IPv6 leak will not be detected"
+                    .to_string(),
+            );
+        }
+        if self.ip_check.timeout_secs > self.ip_check.interval_secs
+            && !self.ip_check.ip_services.is_empty()
+        {
+            out.push(format!(
+                "ip_check.timeout_secs ({}) >= interval_secs ({}): a slow service can \
+                 delay every tick beyond the interval",
+                self.ip_check.timeout_secs, self.ip_check.interval_secs
+            ));
+        }
+        if !self.apps.is_empty() && self.timing.grace_secs == 0 {
+            out.push(
+                "timing.grace_secs is 0: apps are stopped after a single frozen tick — \
+                 a one-second VPN blip kills them"
+                    .to_string(),
+            );
+        }
+        out
+    }
 }
 
 #[derive(Debug, Deserialize, Clone, Default, Serialize)]
@@ -110,11 +167,39 @@ impl Default for TimingConfig {
     }
 }
 
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields, default)]
+pub struct RouteCheckConfig {
+    /// Services whose `/cdn-cgi/trace` is asked where the request came from.
+    pub services: Vec<String>,
+}
+
+impl Default for RouteCheckConfig {
+    fn default() -> Self {
+        Self {
+            services: [
+                "claude.ai",
+                "api.anthropic.com",
+                "chatgpt.com",
+                "api.openai.com",
+                "www.perplexity.ai",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct State {
     #[serde(flatten)]
     pub allow: AllowConfig,
+    /// Active profile name (set by `shuang profile <name>`), or None.
+    pub active_profile: Option<String>,
+    /// Pids left frozen by the current/previous run (crash recovery).
+    pub frozen: Vec<u32>,
 }
 
 /// Default config path: `$XDG_CONFIG_HOME/shuang/config.toml`, falling back to

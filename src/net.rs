@@ -6,7 +6,10 @@
 
 use std::net::IpAddr;
 
-use crate::{config::AllowConfig, ipcheck::Verdict};
+use crate::{
+    config::{AllowConfig, Config, State},
+    ipcheck::Verdict,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct Allowlist {
@@ -68,6 +71,31 @@ impl Allowlist {
             self.ips.push(ip);
         }
     }
+
+    /// Merge an extra allow config into this list (profile or per-app rules):
+    /// union, no removals, idempotent.
+    pub fn merge_in(&mut self, extra: &AllowConfig) {
+        for ip in &extra.ips {
+            self.push_ip(*ip);
+        }
+        for net in &extra.nets {
+            if !self.nets.contains(net) {
+                self.nets.push(*net);
+            }
+        }
+        for country in &extra.countries {
+            if !self.countries.contains(country) {
+                self.countries.push(country.clone());
+            }
+        }
+    }
+
+    /// A copy of this list plus an extra config (profiles, per-app rules).
+    pub fn with_extra(&self, extra: &AllowConfig) -> Allowlist {
+        let mut out = self.clone();
+        out.merge_in(extra);
+        out
+    }
 }
 
 /// Fail-closed evaluation of a verdict against the allowlist.
@@ -97,6 +125,78 @@ pub fn allowed(verdict: &Verdict, list: &Allowlist) -> bool {
 
 fn one_allowed(ip: IpAddr, country: Option<&str>, list: &Allowlist) -> bool {
     list.allows_ip(ip) || country.is_some_and(|c| list.allows_country(c))
+}
+
+/// The global effective allowlist: config ∪ active profile ∪ state.
+/// Returns a warning when the selected profile does not exist (the run
+/// continues on the base allowlist — protection first).
+pub fn effective(cfg: &Config, state: &State) -> (Allowlist, Option<String>) {
+    let mut list = Allowlist::merged(&cfg.allow, &state.allow);
+    let mut warning = None;
+    if let Some(name) = &state.active_profile {
+        match cfg.profiles.get(name) {
+            Some(extra) => list.merge_in(extra),
+            None => warning = Some(format!("profile {name:?} is not defined in config.toml")),
+        }
+    }
+    (list, warning)
+}
+
+/// Why a verdict was denied — the human-readable twin of `allowed`, so events
+/// can tell "the VPN changed the IP" apart from "we could not confirm the IP".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DenyReason {
+    /// No quorum (or no answer at all): the external IP is unknown.
+    NoQuorum,
+    /// The IPv4 address is known but not allowed.
+    Foreign { ip: IpAddr, country: Option<String> },
+    /// The IPv4 address is fine, but a direct IPv6 route is not allowed —
+    /// the classic "VPN tunnels only IPv4" leak.
+    Ipv6Leak { v4: IpAddr, v6: IpAddr },
+}
+
+impl DenyReason {
+    /// One-line, user-facing, honest: never claims the IP is wrong when the
+    /// truth is that it could not be confirmed.
+    pub fn message(&self) -> String {
+        match self {
+            DenyReason::NoQuorum => {
+                "cannot confirm the external IP (not enough services agreed)".to_string()
+            }
+            DenyReason::Foreign { ip, country } => match country {
+                Some(c) => format!("IP {ip} ({c}) is not allowed"),
+                None => format!(
+                    "IP {ip} is not on the allowlist and the country could not be confirmed \
+                     (country service unreachable)"
+                ),
+            },
+            DenyReason::Ipv6Leak { v4, v6 } => {
+                format!("IPv4 {v4} is fine but IPv6 {v6} is not allowed (direct route leak?)")
+            }
+        }
+    }
+}
+
+/// The deny twin of `allowed`: `None` when allowed, the reason when not.
+pub fn deny_reason(verdict: &Verdict, list: &Allowlist) -> Option<DenyReason> {
+    let Some(v4) = verdict.ipv4 else {
+        return Some(DenyReason::NoQuorum);
+    };
+    if !verdict.quorum {
+        return Some(DenyReason::NoQuorum);
+    }
+    if !one_allowed(v4, verdict.country.as_deref(), list) {
+        return Some(DenyReason::Foreign {
+            ip: v4,
+            country: verdict.country.clone(),
+        });
+    }
+    if let Some(v6) = verdict.ipv6
+        && !one_allowed(v6, verdict.country.as_deref(), list)
+    {
+        return Some(DenyReason::Ipv6Leak { v4, v6 });
+    }
+    None
 }
 
 #[cfg(test)]
@@ -208,5 +308,125 @@ mod tests {
         assert_eq!(list.ips.len(), 1);
         list.push_ip("203.0.113.5".parse().unwrap());
         assert_eq!(list.ips.len(), 2);
+    }
+
+    #[test]
+    fn with_extra_unions_profile_and_app_rules() {
+        let base = list_with(&["203.0.113.4"], &["10.0.0.0/8"], &["NL"]);
+        let profile = AllowConfig {
+            ips: vec![],
+            nets: vec![],
+            countries: vec!["DE".to_string()],
+        };
+        let with_profile = base.with_extra(&profile);
+        assert!(with_profile.allows_country("DE"));
+        assert!(with_profile.allows_country("NL"));
+        // The base list is untouched (per-app copies stay independent).
+        assert!(!base.allows_country("DE"));
+        // Idempotent merge.
+        let twice = with_profile.with_extra(&profile);
+        assert_eq!(twice.countries.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn any_ip() -> impl proptest::strategy::Strategy<Value = IpAddr> {
+        (0u32..=0xFFFF_FFFF).prop_map(|n| IpAddr::V4(std::net::Ipv4Addr::from(n)))
+    }
+
+    fn any_country() -> impl proptest::strategy::Strategy<Value = Option<String>> {
+        proptest::option::of(proptest::sample::select(vec![
+            "NL".to_string(),
+            "DE".to_string(),
+            "US".to_string(),
+        ]))
+    }
+
+    fn any_list() -> impl proptest::strategy::Strategy<Value = Allowlist> {
+        (
+            proptest::collection::vec(any_ip(), 0..4),
+            proptest::option::of(24u8..25),
+            any_country(),
+        )
+            .prop_map(|(ips, prefix, country)| {
+                let countries = country.into_iter().collect();
+                Allowlist::merged(
+                    &AllowConfig {
+                        ips,
+                        nets: vec![],
+                        countries,
+                    },
+                    &AllowConfig {
+                        ips: vec![],
+                        // One fixed-ish subnet of the 185.12.40.0/24 shape when enabled.
+                        nets: prefix
+                            .map(|_| "185.12.40.0/24".parse().unwrap())
+                            .into_iter()
+                            .collect(),
+                        countries: vec![],
+                    },
+                )
+            })
+    }
+
+    fn any_verdict() -> impl proptest::strategy::Strategy<Value = Verdict> {
+        (
+            proptest::option::of(any_ip()),
+            any_country(),
+            0u8..2,
+            0u8..2,
+        )
+            .prop_map(|(v4, country, quorum, with_v6)| Verdict {
+                ipv4: v4,
+                // Half the generated verdicts also carry an IPv6 exit.
+                ipv6: (with_v6 % 2 == 0).then_some(IpAddr::V6("2001:db8::1".parse().unwrap())),
+                country,
+                quorum: quorum % 2 == 1,
+            })
+    }
+
+    proptest! {
+        /// Invariant 1: `allowed` and `deny_reason` always agree.
+        #[test]
+        fn allowed_agrees_with_deny_reason(verdict in any_verdict(), list in any_list()) {
+            assert_eq!(allowed(&verdict, &list), deny_reason(&verdict, &list).is_none());
+        }
+
+        /// Invariant 2 (the product rule): no quorum → never allowed, no
+        /// matter what the allowlist contains.
+        #[test]
+        fn no_quorum_never_allowed(v4 in proptest::option::of(any_ip()), list in any_list()) {
+            let verdict = Verdict { ipv4: v4, ipv6: None, country: None, quorum: false };
+            prop_assert!(!allowed(&verdict, &list));
+        }
+
+        /// Invariant 3: monotonicity of the allowlist — adding entries never
+        /// turns an allowed verdict into a denied one.
+        #[test]
+        fn allowlist_is_monotone(verdict in any_verdict(), extra_ip in any_ip()) {
+            let base = Allowlist::merged(&AllowConfig::default(), &AllowConfig::default());
+            let mut bigger = base.clone();
+            bigger.push_ip(extra_ip);
+            prop_assert!(bigger.allows_ip(extra_ip));
+            if allowed(&verdict, &base) {
+                prop_assert!(allowed(&verdict, &bigger));
+            }
+        }
+
+        /// Invariant 4: a country-allowed verdict stays allowed when the exit
+        /// IP changes inside the same country.
+        #[test]
+        fn country_allow_is_ip_agnostic(listed in proptest::sample::select(vec!["NL", "DE"]), ip in any_ip()) {
+            let list = Allowlist::merged(
+                &AllowConfig { ips: vec![], nets: vec![], countries: vec![listed.to_string()] },
+                &AllowConfig::default(),
+            );
+            let verdict = Verdict { ipv4: Some(ip), ipv6: None, country: Some(listed.to_string()), quorum: true };
+            prop_assert!(allowed(&verdict, &list));
+        }
     }
 }

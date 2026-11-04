@@ -1,0 +1,121 @@
+//! `shuang doctor` — environment diagnostics: everything a "why does it not
+//! work?" support request would ask, in one command. Exit 0 = healthy,
+//! 4 = problems found.
+
+use std::path::Path;
+
+use anyhow::Result;
+
+use crate::{config, ipcheck, trusted};
+
+pub async fn run(config_path: &Path, explicit: bool) -> Result<u8> {
+    let mut problems: Vec<String> = Vec::new();
+    let mut checks: Vec<(bool, String)> = Vec::new();
+
+    // 1. Config loads.
+    let cfg = match config::load(config_path, explicit) {
+        Ok(cfg) => {
+            checks.push((true, format!("config readable ({})", config_path.display())));
+            for w in cfg.warnings() {
+                problems.push(format!("config: {w}"));
+            }
+            cfg
+        }
+        Err(err) => {
+            checks.push((false, format!("config readable: {err:#}")));
+            print_checks(&checks, &problems);
+            return Ok(4);
+        }
+    };
+
+    // 2. State merges.
+    let state = config::load_state(config_path);
+    if !state.frozen.is_empty() {
+        problems.push(format!(
+            "state.toml lists {} pid(s) as frozen — the next run/daemon start resumes them",
+            state.frozen.len()
+        ));
+    }
+    checks.push((true, "state.toml readable".to_string()));
+
+    // 3. IP verdict with quorum.
+    let verdict = ipcheck::check(&cfg.ip_check).await;
+    match (&verdict.ipv4, verdict.quorum) {
+        (Some(ip), true) => checks.push((true, format!("external IP: {ip} (quorum met)"))),
+        (Some(ip), false) => {
+            checks.push((false, format!("external IP: {ip} (quorum NOT met)")));
+            problems.push(
+                "the IP quorum is not met: fewer services agreed than min_agree — check \
+                 ip_services reachability"
+                    .to_string(),
+            );
+        }
+        (None, _) => {
+            checks.push((
+                false,
+                "external IP: unknown (no service answered)".to_string(),
+            ));
+            problems
+                .push("no IP service answered — the network or the services are down".to_string());
+        }
+    }
+    if let Some(country) = &verdict.country {
+        checks.push((true, format!("country: {country}")));
+    } else {
+        checks.push((
+            false,
+            "country: unknown (country service unreachable)".to_string(),
+        ));
+    }
+
+    // 4. Timezone vs country (manual comparison; see `shuang leaks`).
+    let tz = std::fs::read_link("/etc/localtime").ok().and_then(|p| {
+        p.to_string_lossy()
+            .split("zoneinfo/")
+            .nth(1)
+            .map(String::from)
+    });
+    checks.push((
+        true,
+        format!("local timezone: {}", tz.as_deref().unwrap_or("unknown")),
+    ));
+
+    // 5. Trusted network state.
+    match trusted::gateway_mac() {
+        Some(mac) => {
+            let trusted_now = trusted::is_trusted(&cfg.trusted_networks);
+            checks.push((true, format!("gateway MAC: {mac} (trusted: {trusted_now})")));
+        }
+        None => checks.push((true, "gateway MAC: not detected".to_string())),
+    }
+
+    // 6. Tray/notifications environment (informational).
+    #[cfg(unix)]
+    {
+        let dbus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some();
+        checks.push((dbus, "D-Bus session (tray/notifications)".to_string()));
+        if !dbus {
+            problems.push(
+                "no D-Bus session: the tray icon and desktop notifications will not work"
+                    .to_string(),
+            );
+        }
+    }
+
+    print_checks(&checks, &problems);
+    Ok(if problems.is_empty() { 0 } else { 4 })
+}
+
+fn print_checks(checks: &[(bool, String)], problems: &[String]) {
+    for (ok, text) in checks {
+        println!("{} {text}", if *ok { "ok " } else { "!!" });
+    }
+    if !problems.is_empty() {
+        println!("Problems:");
+        for p in problems {
+            println!("  ! {p}");
+        }
+    } else {
+        println!("All checks passed.");
+    }
+}

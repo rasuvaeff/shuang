@@ -1,46 +1,60 @@
 //! `shuang run` — kill switch for a single command.
 //!
-//! Exit codes: 0 — command finished; 69 — IP not allowed at start; 75 — the
-//! allowed IP never came back and the command was stopped.
+//! Exit codes: 0 — command finished (or clean shutdown); 69 — IP not allowed
+//! at start; 75 — the allowed IP never came back and the command was stopped.
+//!
+//! Safety: Ctrl+C/SIGTERM resumes everything frozen before exiting; a crash
+//! leaves the frozen pid set in `state.toml` and the next run recovers it.
 
-use std::{collections::HashSet, path::Path, process::Stdio, time::Duration};
+use std::{path::Path, process::Stdio, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use sysinfo::System;
 use tokio::process::Command;
 
 use crate::{
-    config,
+    config, events,
     guard::{Guard, Stage},
-    ipcheck, net,
-    net::Allowlist,
-    platform, procs,
+    ipcheck::{self, CountryCache},
+    net, netwatch,
+    notify::Notifier,
+    procs,
+    supervisor::{Frozen, Shutdown},
 };
+
+const OWNER: &str = "run";
 
 pub async fn run(config_path: &Path, command: Vec<String>, explicit: bool) -> Result<u8> {
     let cfg = config::load(config_path, explicit)?;
     if cfg.ip_check.interval_secs == 0 {
         bail!("ip_check.interval_secs must be at least 1");
     }
+    for warning in cfg.warnings() {
+        eprintln!("shuang: warning: {warning}");
+    }
     let state = config::load_state(config_path);
-    let mut list = Allowlist::merged(&cfg.allow, &state.allow);
+    let (mut list, profile_warning) = net::effective(&cfg, &state);
+    if let Some(w) = profile_warning {
+        eprintln!("shuang: {w}");
+    }
+    let mut countries = CountryCache::new();
+    let mut notifier = Notifier::desktop(true);
 
     let mut verdict = ipcheck::check(&cfg.ip_check).await;
-    // First-run semantics: with an empty allowlist the IP observed at start is
-    // the allowed one (Kordon's "remember the current IP" behavior).
-    if list.is_empty() && verdict.quorum && verdict.ipv4.is_some() {
+    countries.fill(&mut verdict);
+    // First-run semantics: with an empty allowlist the addresses observed at
+    // start are the allowed ones (Kordon's "remember the current IP" behavior).
+    if list.is_empty() && verdict.quorum {
         if let Some(ip) = verdict.ipv4 {
             eprintln!("shuang: allowlist empty, allowing the startup IP {ip}");
             list.push_ip(ip);
         }
+        if let Some(v6) = verdict.ipv6 {
+            list.push_ip(v6);
+        }
     }
-    if !net::allowed(&verdict, &list) {
-        let ip = verdict
-            .ipv4
-            .map(|i| i.to_string())
-            .unwrap_or_else(|| "unknown".into());
-        let country = verdict.country.as_deref().unwrap_or("??");
-        eprintln!("shuang: IP {ip} ({country}) is not allowed — refusing to start");
+    if let Some(reason) = net::deny_reason(&verdict, &list) {
+        eprintln!("shuang: {} — refusing to start", reason.message());
         return Ok(69);
     }
 
@@ -60,49 +74,75 @@ pub async fn run(config_path: &Path, command: Vec<String>, explicit: bool) -> Re
     let grace = Duration::from_secs(cfg.timing.grace_secs);
     let close_timeout = Duration::from_secs(cfg.timing.close_secs);
     let mut guard = Guard::new(grace);
-    let mut suspended: HashSet<u32> = HashSet::new();
+    let mut frozen = Frozen::recover(config_path);
+
+    let (net_tx, mut net_rx) = tokio::sync::mpsc::unbounded_channel();
+    netwatch::spawn(net_tx);
+    let mut shutdown = Shutdown::new()?;
 
     loop {
-        tokio::time::sleep(interval).await;
+        tokio::select! {
+            _ = tokio::time::sleep(interval) => {},
+            // Netlink event: verify right now instead of waiting for the tick.
+            _ = net_rx.recv() => {},
+            // Clean shutdown resumes everything we froze.
+            _ = shutdown.recv() => {
+                eprintln!("shuang: shutting down — resuming and stopping the command");
+                frozen.resume_all();
+                let _ = Frozen::persist_cleared(config_path);
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                return Ok(0);
+            }
+        }
 
         if let Some(status) = child.try_wait()? {
             let code = status
                 .code()
                 .unwrap_or(if status.success() { 0 } else { 1 });
             eprintln!("shuang: {program} exited with {code}");
+            let _ = Frozen::persist_cleared(config_path);
             return Ok(code as u8);
         }
 
         verdict = ipcheck::check(&cfg.ip_check).await;
+        countries.fill(&mut verdict);
         if net::allowed(&verdict, &list) {
-            if guard.good() {
-                resume_all(&mut suspended);
+            if guard.good() && !frozen.is_empty() {
+                frozen.resume_all();
+                let _ = Frozen::persist_cleared(config_path);
                 eprintln!("shuang: allowed IP is back — resumed");
+                log_event(config_path, "resume", program);
+                notifier.resumed();
             }
             continue;
         }
 
-        let ip = verdict
-            .ipv4
-            .map(|i| i.to_string())
-            .unwrap_or_else(|| "unknown".into());
+        // deny_reason is guaranteed Some here (allowed returned false).
+        let message = net::deny_reason(&verdict, &list)
+            .map(|r| r.message())
+            .unwrap_or_else(|| "not allowed".into());
         match guard.bad() {
             Stage::Freeze => {
                 let system = System::new_all();
                 let tree = procs::tree(child_pid, &system);
-                freeze_tree(&tree, &mut suspended);
-                eprintln!(
-                    "shuang: IP {ip} not allowed — froze {} process(es)",
-                    suspended.len()
-                );
+                frozen.freeze_tree(&tree, OWNER);
+                let _ = frozen.persist(config_path);
+                eprintln!("shuang: {message} — froze {} process(es)", frozen.len());
+                log_event(config_path, "freeze", &format!("{program}: {message}"));
+                notifier.freeze_started(&message);
             }
             Stage::Frozen(elapsed) => {
                 let left = grace.saturating_sub(elapsed).as_secs();
+                notifier.still_frozen(&message);
                 eprintln!("shuang: frozen, {left}s left for the allowed IP to come back");
             }
             Stage::MustClose => {
                 eprintln!("shuang: allowed IP never came back — stopping {program}");
-                stop_all(&mut suspended, close_timeout);
+                log_event(config_path, "close", program);
+                let pids = frozen.take_owner(OWNER);
+                frozen.stop_pids(pids, close_timeout);
+                let _ = Frozen::persist_cleared(config_path);
                 let _ = child.wait().await;
                 return Ok(75);
             }
@@ -110,28 +150,8 @@ pub async fn run(config_path: &Path, command: Vec<String>, explicit: bool) -> Re
     }
 }
 
-fn freeze_tree(tree: &[u32], suspended: &mut HashSet<u32>) {
-    for pid in tree {
-        if platform::suspend(*pid).is_ok() {
-            suspended.insert(*pid);
-        }
-    }
-}
-
-fn resume_all(suspended: &mut HashSet<u32>) {
-    for pid in suspended.drain() {
-        // The process may be gone already: a resume failure is not an error.
-        let _ = platform::resume(pid);
-    }
-}
-
-fn stop_all(suspended: &mut HashSet<u32>, close_timeout: Duration) {
-    let pids: Vec<u32> = suspended.drain().collect();
-    for pid in &pids {
-        let _ = platform::terminate(*pid);
-    }
-    std::thread::sleep(close_timeout);
-    for pid in &pids {
-        let _ = platform::kill(*pid);
+fn log_event(config_path: &Path, kind: &str, detail: &str) {
+    if let Err(err) = events::append_line(config_path, kind, detail) {
+        eprintln!("shuang: cannot write history: {err:#}");
     }
 }

@@ -38,30 +38,100 @@ mod imp {
 
 #[cfg(windows)]
 mod imp {
-    //! Windows support lands together with the tray (0.2): `NtSuspendProcess`
-    //! from ntdll via the `windows` crate. Until then every control call is an
-    //! explicit error, never a silent no-op.
+    //! Windows process control: `NtSuspendProcess` / `NtResumeProcess` from
+    //! ntdll — the same mechanism Process Explorer's Suspend uses. Not on the
+    //! public kernel32 API surface, hence the dynamic lookup + unsafe.
+    //!
+    //! SAFETY invariants for every call below:
+    //! - the HANDLE comes from `OpenProcess` on the pid passed in and is
+    //!   closed on every path (`CloseHandle` after each call);
+    //! - the function pointers are resolved from ntdll by name at most once
+    //!   and are the documented NT APIs;
+    //! - no handle is stored or shared across threads.
+    #![allow(unsafe_code)] // the whole point of this module; see AGENTS.md
 
     use anyhow::{Result, bail};
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, HANDLE},
+        System::{
+            LibraryLoader::{GetModuleHandleA, GetProcAddress},
+            Threading::{OpenProcess, PROCESS_SUSPEND_RESUME, PROCESS_TERMINATE},
+        },
+    };
 
-    fn not_yet(op: &str) -> Result<()> {
-        bail!("{op} is not implemented on Windows yet (planned in 0.2)")
+    fn ntdll_fn(name: &[u8]) -> Option<usize> {
+        unsafe {
+            let module = GetModuleHandleA(b"ntdll.dll\0".as_ptr());
+            if module.is_null() {
+                return None;
+            }
+            GetProcAddress(module, name.as_ptr()).map(|f| f as usize)
+        }
     }
 
-    pub fn suspend(_pid: u32) -> Result<()> {
-        not_yet("suspend")
+    type NtSuspendResume = unsafe extern "system" fn(HANDLE) -> i32;
+
+    fn with_handle<T>(pid: u32, access: u32, op: impl FnOnce(HANDLE) -> Option<T>) -> Option<T> {
+        unsafe {
+            let handle = OpenProcess(access, 0, pid);
+            if handle.is_null() {
+                return None;
+            }
+            let out = op(handle);
+            CloseHandle(handle);
+            out
+        }
     }
 
-    pub fn resume(_pid: u32) -> Result<()> {
-        not_yet("resume")
+    pub fn suspend(pid: u32) -> Result<()> {
+        let fun = suspend_fn().unwrap_or_else(|| bail!("NtSuspendProcess not found in ntdll"));
+        let ok = with_handle(pid, PROCESS_SUSPEND_RESUME, |h| {
+            Some(unsafe { fun(h) } >= 0)
+        });
+        if ok == Some(true) {
+            Ok(())
+        } else {
+            bail!("NtSuspendProcess({pid}) failed")
+        }
     }
 
-    pub fn terminate(_pid: u32) -> Result<()> {
-        not_yet("terminate")
+    pub fn resume(pid: u32) -> Result<()> {
+        let fun = resume_fn().unwrap_or_else(|| bail!("NtResumeProcess not found in ntdll"));
+        let ok = with_handle(pid, PROCESS_SUSPEND_RESUME, |h| {
+            Some(unsafe { fun(h) } >= 0)
+        });
+        if ok == Some(true) {
+            Ok(())
+        } else {
+            bail!("NtResumeProcess({pid}) failed")
+        }
     }
 
-    pub fn kill(_pid: u32) -> Result<()> {
-        not_yet("kill")
+    pub fn terminate(pid: u32) -> Result<()> {
+        let ok = with_handle(pid, PROCESS_TERMINATE, |h| {
+            Some(unsafe { TerminateProcess_Thunk(h) } != 0)
+        });
+        if ok == Some(true) {
+            Ok(())
+        } else {
+            bail!("TerminateProcess({pid}) failed")
+        }
+    }
+
+    pub fn kill(pid: u32) -> Result<()> {
+        terminate(pid)
+    }
+
+    unsafe fn TerminateProcess_Thunk(handle: HANDLE) -> u32 {
+        windows_sys::Win32::System::Threading::TerminateProcess(handle, 1)
+    }
+
+    fn suspend_fn() -> Option<NtSuspendResume> {
+        ntdll_fn(b"NtSuspendProcess\0").map(|a| unsafe { std::mem::transmute(a) })
+    }
+
+    fn resume_fn() -> Option<NtSuspendResume> {
+        ntdll_fn(b"NtResumeProcess\0").map(|a| unsafe { std::mem::transmute(a) })
     }
 }
 
