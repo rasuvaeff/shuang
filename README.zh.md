@@ -1,5 +1,7 @@
 # shuang — 霜
 
+**[English](README.md)** · [Русский](README.ru.md) · **[中文](README.zh.md)**
+
 **VPN 掉线时冻结你的应用 —— 暂停,而不是杀掉。**
 
 `shuang` 是一个免费、开源的按应用 kill switch。当你的外部 IP 不在白名单里时,

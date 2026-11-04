@@ -1,5 +1,7 @@
 # shuang — 霜 / frost
 
+**[English](README.md)** · [Русский](README.ru.md) · [中文](README.zh.md)
+
 **Freeze your apps when the VPN drops. Suspend, don't kill.**
 
 `shuang` is a free, open-source per-application kill switch. While your

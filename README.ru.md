@@ -1,5 +1,7 @@
 # shuang — 霜 / мороз
 
+**[English](README.md)** · [Русский](README.ru.md)** · [中文](README.zh.md)
+
 **Замораживай приложения, когда падает VPN. Пауза вместо убийства.**
 
 `shuang` — бесплатный open-source kill switch уровня приложения. Пока внешний
