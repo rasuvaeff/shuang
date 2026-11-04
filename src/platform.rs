@@ -116,7 +116,7 @@ mod imp {
 
     pub fn terminate(pid: u32) -> Result<()> {
         let ok = with_handle(pid, PROCESS_TERMINATE, |h| {
-            Some(unsafe { TerminateProcess_Thunk(h) } != 0)
+            Some(unsafe { terminate_process_thunk(h) } != 0)
         });
         if ok == Some(true) {
             Ok(())
@@ -129,7 +129,7 @@ mod imp {
         terminate(pid)
     }
 
-    unsafe fn TerminateProcess_Thunk(handle: HANDLE) -> i32 {
+    unsafe fn terminate_process_thunk(handle: HANDLE) -> i32 {
         // Edition 2024: an `unsafe fn` body is no longer an implicit unsafe block.
         unsafe { windows_sys::Win32::System::Threading::TerminateProcess(handle, 1) }
     }
