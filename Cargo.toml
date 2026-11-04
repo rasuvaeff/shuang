@@ -58,6 +58,7 @@ netlink-sys = "0.9"
 [target.'cfg(windows)'.dependencies]
 tray-icon = "0.24"
 winit = "0.30"
+zip = "5"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
