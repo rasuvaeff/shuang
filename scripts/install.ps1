@@ -92,5 +92,5 @@ if ($entries -notcontains $InstallDir.TrimEnd('\')) {
 Write-Host "==> Installed:"
 & $binPath --version
 Write-Host ""
-Write-Host "Run 'shuang --help' (or 'git gone -h') to get started."
-Write-Host "(If 'git gone' is not found, open a new terminal so PATH is refreshed.)"
+Write-Host "Run 'shuang --help' (or 'shuang -h') to get started."
+Write-Host "(If 'shuang' is not found, open a new terminal so PATH is refreshed.)"
