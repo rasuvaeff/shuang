@@ -55,10 +55,12 @@ pub fn matches(process: &Process, pattern: &str) -> bool {
             .exe()
             .is_some_and(|exe| exe.to_string_lossy().contains(pattern));
     }
-    // Case-insensitive: Windows reports process names in arbitrary case
-    // ("Claude.exe" vs "claude.exe"), and users write patterns in any case.
+    // Case-insensitive ("Claude.exe" vs "claude.exe" — Windows reports
+    // names in arbitrary case), and the `.exe` suffix is optional on both
+    // sides: a "claude" pattern matches "claude.exe" and vice versa.
     let name = process.name().to_string_lossy();
     let name = name.strip_suffix(".exe").unwrap_or(&name);
+    let pattern = pattern.strip_suffix(".exe").unwrap_or(pattern);
     name.eq_ignore_ascii_case(pattern)
 }
 
