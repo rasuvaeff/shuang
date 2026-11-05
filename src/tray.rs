@@ -215,15 +215,16 @@ mod native {
     #[cfg(windows)]
     pub fn spawn_threaded(quit: Arc<AtomicBool>) -> Option<winit::event_loop::EventLoopProxy<Msg>> {
         let (tx, rx) = std::sync::mpsc::channel::<Option<winit::event_loop::EventLoopProxy<Msg>>>();
-        std::thread::spawn(move || {
-            // Build and keep running on this thread: only the (Send) proxy
-            // crosses back.
-            let started = build(Arc::clone(&quit)).map(|parts| {
-                let proxy = parts.proxy.clone();
-                std::thread::spawn(move || run(parts));
-                proxy
-            });
-            let _ = tx.send(started);
+        // Build AND run on this one thread: the tray types are !Send, so
+        // only the (Send) proxy may cross back to the caller.
+        std::thread::spawn(move || match build(Arc::clone(&quit)) {
+            Some(parts) => {
+                let _ = tx.send(Some(parts.proxy.clone()));
+                run(parts); // blocks this thread until exit
+            }
+            None => {
+                let _ = tx.send(None);
+            }
         });
         rx.recv_timeout(std::time::Duration::from_secs(5))
             .ok()
@@ -375,7 +376,7 @@ impl TrayHandle {
         #[cfg(target_os = "macos")]
         {
             eprintln!("shuang: tray must be built on the main thread — running headless");
-            return Self { inner: None, quit };
+            Self { inner: None, quit }
         }
 
         // Any other platform: headless.

@@ -53,32 +53,31 @@ async fn main() -> ExitCode {
         no_notify,
         no_panel,
     } = &cli.command
+        && let Some(main_tray) = tray::macos_main::build()
     {
-        if let Some(main_tray) = tray::macos_main::build() {
-            let tray_handle = tray::TrayHandle::from_main(&main_tray);
-            let path = path.clone();
-            let no_notify = *no_notify;
-            let no_panel = *no_panel;
-            std::thread::spawn(move || {
-                let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-                rt.block_on(async move {
-                    if let Err(err) = daemon::run(
-                        &path,
-                        explicit,
-                        false,
-                        no_notify,
-                        no_panel,
-                        Some(tray_handle),
-                    )
-                    .await
-                    {
-                        eprintln!("Error: {err:#}");
-                    }
-                });
+        let tray_handle = tray::TrayHandle::from_main(&main_tray);
+        let path = path.clone();
+        let no_notify = *no_notify;
+        let no_panel = *no_panel;
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+            rt.block_on(async move {
+                if let Err(err) = daemon::run(
+                    &path,
+                    explicit,
+                    false,
+                    no_notify,
+                    no_panel,
+                    Some(tray_handle),
+                )
+                .await
+                {
+                    eprintln!("Error: {err:#}");
+                }
             });
-            tray::macos_main::run(main_tray);
-            return ExitCode::from(0);
-        }
+        });
+        tray::macos_main::run(main_tray);
+        return ExitCode::from(0);
     }
 
     let code = match cli.command {
