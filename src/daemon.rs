@@ -45,11 +45,13 @@ pub async fn run(
     if cfg.apps.is_empty() {
         bail!("no [[apps]] configured — add one to config.toml (see README)");
     }
+    let state = config::load_state(config_path);
+    cfg.apply_overrides(&state);
+    // Warnings after the overrides: the panel may already fix what the raw
+    // config gets wrong (e.g. interval vs timeout).
     for warning in cfg.warnings() {
         eprintln!("shuang: warning: {warning}");
     }
-    let state = config::load_state(config_path);
-    cfg.apply_overrides(&state);
     let (global_list, profile_warning) = net::effective(&cfg, &state);
     if let Some(w) = profile_warning {
         eprintln!("shuang: {w}");
