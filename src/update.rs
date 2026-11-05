@@ -145,10 +145,17 @@ fn hex(bytes: &[u8]) -> String {
 
 /// Unpack the downloaded archive and atomically replace `exe`.
 fn replace_self(archive: &[u8], exe: &Path) -> Result<()> {
-    let temp = std::env::temp_dir().join(format!("shuang-update-{}", std::process::id()));
-    std::fs::create_dir_all(&temp)?;
-    let extracted = extract(archive, &temp)?;
-    install_binary(&extracted, exe)
+    // Extract NEXT TO the executable, not into /tmp: the final rename must
+    // stay on one filesystem (EXDEV otherwise — /tmp is often tmpfs).
+    let dir = exe
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!(".shuang-update-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let extracted = extract(archive, &dir)?;
+    let result = install_binary(&extracted, exe);
+    let _ = std::fs::remove_dir_all(&dir);
+    result
 }
 
 /// Pull `shuang`/`shuang.exe` out of the release archive.

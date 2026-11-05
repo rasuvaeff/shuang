@@ -59,6 +59,12 @@
 - macOS tray: the daemon runs on a worker thread while the winit event loop
   owns the main thread (tray-icon).
 
+## 0.3.1 — 2026-11-05
+
+- Fix: `shuang update` failed with `Invalid cross-device link` when /tmp is a
+  different filesystem — the archive now extracts next to the binary so the
+  final rename stays on one filesystem.
+
 ## 0.3.0 — 2026-11-05
 
 - Daemon split-routing freeze (opt-in `[route_check] enabled`): re-asks the
