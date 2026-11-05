@@ -14,6 +14,8 @@ pub struct WeeklyStats {
     pub closes: usize,
     pub resumes: usize,
     pub avg_freeze_secs: Option<u64>,
+    /// Distinct exit-IP changes in the window (flapping is itself a signal).
+    pub exit_changes: usize,
     /// Per-app freeze counts ("claude-code: 12").
     pub per_app: Vec<(String, usize)>,
 }
@@ -60,6 +62,9 @@ pub fn parse(lines: &[String], since_secs: u64) -> WeeklyStats {
                     open_freezes.remove(pos);
                 }
             }
+            "exit-change" => {
+                stats.exit_changes += 1;
+            }
             _ => {}
         }
     }
@@ -87,8 +92,8 @@ pub fn summary(config_path: &Path, tail: usize) -> Result<String> {
     out.push_str(&format!("  freezes: {}\n", stats.freezes));
     out.push_str(&format!("  resumes: {}\n", stats.resumes));
     out.push_str(&format!(
-        "  closes (allowed IP never returned): {}\n",
-        stats.closes
+        "  closes (allowed IP never returned): {}\nexit changes: {}\n",
+        stats.closes, stats.exit_changes
     ));
     match stats.avg_freeze_secs {
         Some(avg) => out.push_str(&format!("  average freeze duration: {avg}s\n")),

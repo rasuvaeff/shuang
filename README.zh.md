@@ -195,12 +195,21 @@ country_services = ["https://api.country.is"]
 
 [timing]
 grace_secs = 20                     # 冻结后等待正确 IP 的时间
+freeze_on_event_first = false        # 偏执模式:网络事件先冻结、再复查
 close_secs = 5                      # 强制杀死前的优雅停止时间
 
 [profiles.work]                     # `shuang profile work` 激活
 countries = ["NL", "DE"]
 
 trusted_networks = ["aa:bb:cc:dd:ee:ff"]   # 关闭保护的路由器 MAC(家/办公室)
+
+[watchdog]
+processes = ["v2ray", "clash"]  # freeze when the local proxy client dies (empty = off)
+
+[reputation]
+enabled = true         # freeze while the exit IP carries a proxy/hosting flag
+fail_flags = ["proxy", "hosting"]
+every_secs = 60
 
 [route_check]
 enabled = true          # freeze when the AI edge sees a foreign address (split routing)

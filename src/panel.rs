@@ -287,6 +287,9 @@ async fn get_settings(
         "close_secs": cfg.timing.close_secs,
         "min_agree": cfg.ip_check.min_agree,
         "notify": state.settings.notify.unwrap_or(true),
+        "freeze_on_event_first": cfg.timing.freeze_on_event_first,
+        "watchdog_processes": cfg.watchdog.processes,
+        "reputation_enabled": cfg.reputation.enabled,
         "trusted_networks": state.trusted_networks,
         "gateway_mac": crate::trusted::gateway_mac(),
     }))
@@ -300,6 +303,9 @@ struct SettingsBody {
     close_secs: Option<u64>,
     min_agree: Option<usize>,
     notify: Option<bool>,
+    freeze_on_event_first: Option<bool>,
+    watchdog_processes: Option<Vec<String>>,
+    reputation_enabled: Option<bool>,
 }
 
 async fn post_settings(
@@ -335,6 +341,21 @@ async fn post_settings(
     }
     if parsed.notify.is_some() {
         s.notify = parsed.notify;
+    }
+    if parsed.freeze_on_event_first.is_some() {
+        s.freeze_on_event_first = parsed.freeze_on_event_first;
+    }
+    if let Some(patterns) = parsed.watchdog_processes {
+        s.watchdog_processes = Some(
+            patterns
+                .iter()
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty())
+                .collect(),
+        );
+    }
+    if parsed.reputation_enabled.is_some() {
+        s.reputation_enabled = parsed.reputation_enabled;
     }
     match config::save_state(&app.config_path, &state) {
         Ok(()) => (StatusCode::OK, "saved — restart the daemon to apply").into_response(),
@@ -647,7 +668,11 @@ const PAGE_HTML: &str = r#"<!doctype html>
        grace <input type="number" id="s_grace" style="width:4rem"> s ·
        close <input type="number" id="s_close" style="width:4rem"> s ·
        quorum <input type="number" id="s_min_agree" style="width:3rem"></div>
-  <div style="margin-top:.5rem"><label><input type="checkbox" id="s_notify"> desktop notifications</label></div>
+  <div style="margin-top:.5rem"><label><input type="checkbox" id="s_notify"> desktop notifications</label>
+    <label style="margin-left:1rem"><input type="checkbox" id="s_paranoid"> paranoid (freeze on network event first)</label>
+    <label style="margin-left:1rem"><input type="checkbox" id="s_reputation"> reputation guard</label></div>
+  <div style="margin-top:.5rem">watchdog processes (comma-separated, e.g. v2ray, clash — empty = off)
+    <input type="text" id="s_watchdog" style="width:100%"></div>
   <div style="margin-top:.6rem"><button onclick="saveSettings()">Save settings</button>
        <button onclick="trustNetwork()">Trust this network</button>
        <span class="muted" id="trusted_macs"></span></div></div>
@@ -731,6 +756,9 @@ async function loadSettings() {
   document.getElementById('s_close').value = s.close_secs;
   document.getElementById('s_min_agree').value = s.min_agree;
   document.getElementById('s_notify').checked = s.notify;
+  document.getElementById('s_paranoid').checked = s.freeze_on_event_first;
+  document.getElementById('s_reputation').checked = s.reputation_enabled;
+  document.getElementById('s_watchdog').value = (s.watchdog_processes || []).join(', ');
   document.getElementById('trusted_macs').textContent =
     s.trusted_networks.length ? 'trusted: ' + s.trusted_networks.join(', ') : '';
 }
@@ -741,6 +769,10 @@ async function saveSettings() {
     close_secs: +document.getElementById('s_close').value,
     min_agree: +document.getElementById('s_min_agree').value,
     notify: document.getElementById('s_notify').checked,
+    freeze_on_event_first: document.getElementById('s_paranoid').checked,
+    reputation_enabled: document.getElementById('s_reputation').checked,
+    watchdog_processes: document.getElementById('s_watchdog').value.split(',')
+      .map(s => s.trim()).filter(s => s.length > 0),
   };
   const r = await fetch('/api/settings', { method: 'POST', headers: H,
     body: JSON.stringify(body) });

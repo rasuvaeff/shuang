@@ -20,6 +20,7 @@ use crate::{
     config, events,
     guard::{Guard, Stage},
     ipcheck::{self, CountryCache},
+    leaks,
     net::{self, Allowlist},
     netwatch,
     notify::Notifier,
@@ -76,6 +77,8 @@ pub async fn run(
         .build()
         .ok();
     let mut route_state: Option<(String, std::time::Instant)> = None; // (reason, checked_at)
+    let mut reputation_state: Option<(String, std::time::Instant)> = None;
+    let mut last_exit: Option<String> = None;
 
     // macOS hands us a tray built on the main thread; other platforms spawn
     // their own here.
@@ -113,7 +116,25 @@ pub async fn run(
         }
     );
 
+    let mut event_pending = false;
     loop {
+        // Paranoid mode: freeze FIRST on a network event, verify after.
+        if event_pending
+            && cfg.timing.freeze_on_event_first
+            && !trusted::is_trusted(&cfg.trusted_networks)
+        {
+            eprintln!("shuang: network change — frozen preemptively");
+            for app in cfg.apps.iter() {
+                for (_, pid) in procs::find_targets(&app.r#match, &system_snapshot()) {
+                    let tree = procs::tree(pid, &system_snapshot());
+                    frozen.freeze_tree(&tree, &app.name);
+                }
+            }
+            guards_rotate(&mut guards);
+            let _ = frozen.persist(config_path);
+        }
+        event_pending = false;
+
         let mut verdict = ipcheck::check(&cfg.ip_check).await;
         countries.fill(&mut verdict);
         let summary = tray::summary(&verdict);
@@ -195,7 +216,60 @@ pub async fn run(
                 }
             }
         }
-        let route_leak = route_state.is_some();
+        // Proxy-client watchdog: the client's death may not move routes.
+        let watchdog_dead = !cfg.watchdog.processes.is_empty()
+            && procs::find_targets(&cfg.watchdog.processes, &system).is_empty();
+
+        // Exit-reputation guard (opt-in, periodic).
+        if cfg.reputation.enabled {
+            let due = reputation_state
+                .as_ref()
+                .is_none_or(|(_, at)| at.elapsed().as_secs() >= cfg.reputation.every_secs.max(1));
+            if due {
+                reputation_state = if let (Some(client), Some(ip)) = (&route_client, verdict.ipv4) {
+                    let rep = leaks::fetch_reputation(client, &ip.to_string()).await;
+                    let hit = cfg
+                        .reputation
+                        .fail_flags
+                        .iter()
+                        .any(|flag| match flag.as_str() {
+                            "proxy" => rep.proxy == Some(true),
+                            "hosting" => rep.hosting == Some(true),
+                            "tor" => rep.tor == Some(true),
+                            _ => false,
+                        });
+                    let now = std::time::Instant::now();
+                    if hit {
+                        let reason =
+                            format!("exit {ip} is flagged: {} — reputation guard", rep.render());
+                        eprintln!("shuang: {reason}");
+                        log_event(config_path, "reputation", &reason);
+                        Some((reason, now))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+            }
+        }
+        let reputation_bad = reputation_state.is_some();
+
+        // Exit rotation: every change is an event (exit flapping is itself
+        // a ban signal for AI accounts).
+        if let Some(ip) = verdict.ipv4 {
+            let ip = ip.to_string();
+            if last_exit.as_ref().is_some_and(|old| *old != ip) {
+                log_event(
+                    config_path,
+                    "exit-change",
+                    &format!("{ip} (was {})", last_exit.unwrap_or_default()),
+                );
+            }
+            last_exit = Some(ip);
+        }
+
+        let route_leak = route_state.is_some() || watchdog_dead || reputation_bad;
 
         let mut any_frozen = false;
         let mut worst_detail = String::new();
@@ -220,12 +294,17 @@ pub async fn run(
                 continue;
             }
 
-            let message = if route_leak {
-                // The leak text names the service and the foreign address.
-                route_state
-                    .as_ref()
-                    .map(|(r, _)| r.clone())
-                    .unwrap_or_else(|| "split routing leak".to_string())
+            let message = if watchdog_dead {
+                format!(
+                    "proxy client ({}) is not running — frozen",
+                    cfg.watchdog.processes.join(", ")
+                )
+            } else if let Some((reason, _)) = &reputation_state {
+                reason.clone()
+            } else if let Some((reason, _)) = &route_state {
+                reason.clone()
+            } else if route_leak {
+                "split routing leak".to_string()
             } else {
                 net::deny_reason(&verdict, list)
                     .map(|r| r.message())
@@ -296,17 +375,20 @@ pub async fn run(
 }
 
 /// Sleep until the next tick, a netlink event, or a shutdown signal —
-/// whichever comes first. On shutdown resumes everything and exits the task.
+/// whichever comes first. Returns true when a network event woke us (the
+/// paranoid mode freezes on that before re-checking). On shutdown resumes
+/// everything and exits the task.
 async fn wait_tick(
     interval: Duration,
     net_rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>,
     shutdown: &mut Shutdown,
     frozen: &mut Frozen,
     config_path: &Path,
-) {
+) -> bool {
+    let mut event = false;
     tokio::select! {
         _ = tokio::time::sleep(interval) => {},
-        _ = net_rx.recv() => {},
+        _ = net_rx.recv() => { event = true; },
         _ = shutdown.recv() => {
             eprintln!("shuang: shutting down — resuming frozen processes");
             frozen.resume_all();
@@ -314,6 +396,7 @@ async fn wait_tick(
             std::process::exit(0);
         }
     }
+    event
 }
 
 /// Ask every service's edge; None = all traces match the known exits.
@@ -341,6 +424,17 @@ async fn check_routes(
         }
     }
     None
+}
+
+fn system_snapshot() -> System {
+    System::new_all()
+}
+
+/// Advance every guard one "bad" tick so the preemptive freeze is bookkept.
+fn guards_rotate(guards: &mut [Guard]) {
+    for guard in guards.iter_mut() {
+        let _ = guard.bad();
+    }
 }
 
 fn log_event(config_path: &Path, kind: &str, detail: &str) {

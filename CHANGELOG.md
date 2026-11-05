@@ -83,5 +83,19 @@
 - `shuang update` self-update (from 0.2.x), panel-managed protected apps,
   macOS tray — shipped in 0.2.x, listed for completeness.
 
+## Unreleased
+
+- Proxy-client watchdog (`[watchdog] processes`): freeze when the local
+  v2ray/clash/… client dies — its death may not move routes, so netlink
+  stays silent.
+- Paranoid mode (`freeze_on_event_first`): a network event freezes before
+  the IP re-check — zero-leak window at the cost of short pauses.
+- Reputation guard (`[reputation]`): freeze while the exit IP carries any
+  of the configured flags (proxy/hosting/tor), checked periodically.
+- Exit-rotation counter: every exit change lands in history as
+  `exit-change`; `shuang stats` shows the weekly count.
+- All four are panel-editable (Settings card) and live in `state.toml`
+  overrides; nothing requires editing config.toml.
+
 ## Planned
 

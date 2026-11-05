@@ -210,12 +210,21 @@ country_services = ["https://api.country.is"]
 
 [timing]
 grace_secs = 20                     # how long a frozen tree waits for the right IP
+freeze_on_event_first = false        # paranoid: freeze on a network event BEFORE re-checking
 close_secs = 5                      # polite stop before a forced kill
 
 [profiles.work]                     # `shuang profile work` activates
 countries = ["NL", "DE"]
 
 trusted_networks = ["aa:bb:cc:dd:ee:ff"]   # gateway MACs where protection is off (home/office)
+
+[watchdog]
+processes = ["v2ray", "clash"]  # freeze when the local proxy client dies (empty = off)
+
+[reputation]
+enabled = true         # freeze while the exit IP carries a proxy/hosting flag
+fail_flags = ["proxy", "hosting"]
+every_secs = 60
 
 [route_check]
 enabled = true          # freeze when the AI edge sees a foreign address (split routing)
