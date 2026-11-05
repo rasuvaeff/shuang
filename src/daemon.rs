@@ -70,6 +70,12 @@ pub async fn run(
     let mut countries = CountryCache::new();
     let mut guards: Vec<Guard> = cfg.apps.iter().map(|_| Guard::new(grace)).collect();
     let mut frozen = Frozen::recover(config_path);
+    // Split-routing check: "" while OK, Some(reason) while leaking.
+    let route_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(cfg.ip_check.timeout_secs.max(1)))
+        .build()
+        .ok();
+    let mut route_state: Option<(String, std::time::Instant)> = None; // (reason, checked_at)
 
     // macOS hands us a tray built on the main thread; other platforms spawn
     // their own here.
@@ -169,6 +175,28 @@ pub async fn run(
             continue;
         }
 
+        // Periodic AI-edge check (opt-in): a trace answer that matches none of
+        // the known exits means the VPN split-routes the AI traffic — freeze.
+        if cfg.route_check.enabled {
+            let due = route_state
+                .as_ref()
+                .is_none_or(|(_, at)| at.elapsed().as_secs() >= cfg.route_check.every_secs.max(1));
+            if due {
+                route_state = check_routes(
+                    route_client.as_ref(),
+                    &cfg.route_check.services,
+                    verdict.ipv4.map(|i| i.to_string()),
+                    verdict.ipv6.map(|i| i.to_string()),
+                )
+                .await;
+                if let Some((reason, _)) = &route_state {
+                    eprintln!("shuang: {reason}");
+                    log_event(config_path, "route-leak", reason);
+                }
+            }
+        }
+        let route_leak = route_state.is_some();
+
         let mut any_frozen = false;
         let mut worst_detail = String::new();
 
@@ -178,7 +206,7 @@ pub async fn run(
             let target_pids: Vec<u32> = targets.iter().map(|(_, pid)| *pid).collect();
             let guard = &mut guards[idx];
 
-            if net::allowed(&verdict, list) {
+            if net::allowed(&verdict, list) && !route_leak {
                 if guard.good() && !frozen.is_empty() {
                     let pids = frozen.take_owner(&app.name);
                     for pid in &pids {
@@ -192,9 +220,17 @@ pub async fn run(
                 continue;
             }
 
-            let message = net::deny_reason(&verdict, list)
-                .map(|r| r.message())
-                .unwrap_or_else(|| "not allowed".into());
+            let message = if route_leak {
+                // The leak text names the service and the foreign address.
+                route_state
+                    .as_ref()
+                    .map(|(r, _)| r.clone())
+                    .unwrap_or_else(|| "split routing leak".to_string())
+            } else {
+                net::deny_reason(&verdict, list)
+                    .map(|r| r.message())
+                    .unwrap_or_else(|| "not allowed".into())
+            };
             any_frozen = true;
             if worst_detail.is_empty() {
                 worst_detail = format!("[{}] {message}", app.name);
@@ -278,6 +314,33 @@ async fn wait_tick(
             std::process::exit(0);
         }
     }
+}
+
+/// Ask every service's edge; None = all traces match the known exits.
+async fn check_routes(
+    client: Option<&reqwest::Client>,
+    services: &[String],
+    v4: Option<String>,
+    v6: Option<String>,
+) -> Option<(String, std::time::Instant)> {
+    let client = client?;
+    let now = std::time::Instant::now();
+    for service in services {
+        let answer = crate::leaks::fetch_trace_public(client, service).await;
+        if let Some(ip) = answer.ip
+            && !crate::leaks::trace_matches(&ip, v4.as_deref(), v6.as_deref())
+        {
+            return Some((
+                format!(
+                    "{service} sees {ip} but the exits are {}/{} — split routing leak",
+                    v4.as_deref().unwrap_or("?"),
+                    v6.as_deref().unwrap_or("?")
+                ),
+                now,
+            ));
+        }
+    }
+    None
 }
 
 fn log_event(config_path: &Path, kind: &str, detail: &str) {

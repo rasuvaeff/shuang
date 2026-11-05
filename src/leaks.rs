@@ -34,6 +34,12 @@ pub struct LeakReport {
     pub reputation: Option<Reputation>,
 }
 
+/// Does a trace answer match one of the known exits? Dual-stack is normal:
+/// a v6 trace must match the v6 exit, a v4 trace the v4 quorum.
+pub fn trace_matches(trace_ip: &str, v4_exit: Option<&str>, v6_exit: Option<&str>) -> bool {
+    [v4_exit, v6_exit].contains(&Some(trace_ip))
+}
+
 #[derive(Debug)]
 pub struct RouteAnswer {
     pub service: String,
@@ -207,9 +213,7 @@ impl LeakReport {
                         route.service,
                         route.country.as_deref().unwrap_or("??")
                     ));
-                    // Dual-stack is normal: a v6 trace matches the v6 exit,
-                    // a v4 trace matches the v4 quorum. Neither → real leak.
-                    if !expected.contains(&Some(ip.as_str())) {
+                    if !trace_matches(ip, self.quorum_ip.as_deref(), self.ipv6_exit.as_deref()) {
                         problems.push(format!(
                             "{} sees {ip} but the exits are {} — split routing leak",
                             route.service,
@@ -445,6 +449,10 @@ async fn fetch_ip(client: &reqwest::Client, url: &str) -> String {
 }
 
 /// Ask one AI service's own edge where the request came from (and how fast).
+pub(crate) async fn fetch_trace_public(client: &reqwest::Client, service: &str) -> RouteAnswer {
+    fetch_trace(client, service).await
+}
+
 async fn fetch_trace(client: &reqwest::Client, service: &str) -> RouteAnswer {
     let url = format!("https://{service}/cdn-cgi/trace");
     let started = std::time::Instant::now();
@@ -585,6 +593,16 @@ mod tests {
         );
         let (_, problems) = r.render();
         assert!(problems.is_empty(), "{problems:?}");
+    }
+
+    #[test]
+    fn trace_matches_is_dual_stack_aware() {
+        let v4 = Some("203.0.113.7");
+        let v6 = Some("2001:db8::1");
+        assert!(trace_matches("203.0.113.7", v4, v6));
+        assert!(trace_matches("2001:db8::1", v4, v6));
+        assert!(!trace_matches("198.51.100.9", v4, v6));
+        assert!(!trace_matches("203.0.113.7", None, v6));
     }
 
     #[test]

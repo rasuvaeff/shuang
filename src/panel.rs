@@ -385,6 +385,8 @@ async fn get_apps(
             serde_json::json!({
                 "name": a.name,
                 "match": a.r#match,
+                "countries": a.allow.as_ref().map(|x| x.countries.clone()).unwrap_or_default(),
+                "ips": a.allow.as_ref().map(|x| x.ips.iter().map(|i| i.to_string()).collect::<Vec<_>>()).unwrap_or_default(),
                 // Panel-added (deletable here) vs hand-written in config.
                 "source": if state_names.contains(&a.name.as_str()) { "panel" } else { "config" },
             })
@@ -398,6 +400,8 @@ struct AppBody {
     name: String,
     #[serde(rename = "match")]
     matches: Vec<String>,
+    /// Optional per-app allow rules: {"countries": ["NL"], "ips": [...]}.
+    allow: Option<config::AllowConfig>,
 }
 
 async fn post_app(
@@ -422,7 +426,7 @@ async fn post_app(
     let app_spec = config::AppSpec {
         name: parsed.name.trim().to_string(),
         r#match: parsed.matches,
-        allow: None,
+        allow: parsed.allow,
     };
     match state.apps.iter().position(|a| a.name == app_spec.name) {
         Some(i) => state.apps[i] = app_spec,
@@ -626,6 +630,7 @@ const PAGE_HTML: &str = r#"<!doctype html>
 <div class="card"><strong>Protected apps</strong><ul id="apps"></ul>
   <form id="addapp"><input type="text" id="appname" placeholder="name (e.g. claude-code)">
   <input type="text" id="appmatch" placeholder="match pattern (e.g. claude)">
+  <input type="text" id="appcountries" placeholder="only from countries (e.g. NL,DE) — optional">
   <button>Add</button></form>
   <div style="margin-top:.5rem"><select id="procpick"></select>
   <button onclick="pickProcess()">Add from running processes</button></div>
@@ -745,7 +750,7 @@ async function loadApps() {
   const r = await (await fetch('/api/apps', { headers: H })).json();
   const ul = document.getElementById('apps');
   ul.innerHTML = (r.apps || []).map(a =>
-    `<li><span>${a.name} <span class="muted">${a.match.join(', ')} (${a.source})</span></span>` +
+    `<li><span>${a.name} <span class="muted">${a.match.join(', ')}${(a.countries||[]).length ? ' · only ' + a.countries.join(',') : ''} (${a.source})</span></span>` +
     (a.source === 'panel' ? `<button onclick="delApp('${a.name}')">×</button>` : '') +
     `</li>`).join('') || '<li class="muted">none</li>';
   const p = await (await fetch('/api/processes', { headers: H })).json();
@@ -757,11 +762,14 @@ document.getElementById('addapp').onsubmit = async (e) => {
   const name = document.getElementById('appname').value.trim();
   const m = document.getElementById('appmatch').value.trim();
   if (!name || !m) return;
+  const countries = document.getElementById('appcountries').value
+    .split(',').map(s => s.trim().toUpperCase()).filter(s => s.length === 2);
   const r = await fetch('/api/apps', { method: 'POST', headers: H,
-    body: JSON.stringify({ name, match: [m] }) });
+    body: JSON.stringify({ name, match: [m], allow: countries.length ? { countries } : null }) });
   if (!r.ok) alert(await r.text());
   document.getElementById('appname').value = '';
   document.getElementById('appmatch').value = '';
+  document.getElementById('appcountries').value = '';
   loadApps();
 };
 async function delApp(name) {
