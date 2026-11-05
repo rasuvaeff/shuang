@@ -163,13 +163,12 @@ mod tests {
 
     #[test]
     fn stability_gate_waits_and_resets() {
-        let mut guard = Guard::new(Duration::from_secs(1000));
-        guard.bad();
+        // frozen_for: clock pinned at 1000 s, frozen since the 30 s mark.
+        let mut guard = Guard::frozen_for(Duration::from_secs(1000), Duration::from_secs(30));
         // First good tick opens the gate, does not resume.
         assert!(!guard.good_stable(Duration::from_secs(5)));
-        // Inject the passage of time by rewinding stable_since.
-        let past = mono::now().saturating_sub(Duration::from_secs(10));
-        guard.stable_since = Some(past);
+        // Ten seconds of stability (990 → 1000 on the injected clock).
+        guard.stable_since = Some(Duration::from_secs(990));
         assert!(guard.good_stable(Duration::from_secs(5)));
         // Not frozen anymore → good_stable stays false.
         assert!(!guard.good_stable(Duration::from_secs(5)));
@@ -177,11 +176,9 @@ mod tests {
 
     #[test]
     fn stability_gate_resets_on_a_flap() {
-        let mut guard = Guard::new(Duration::from_secs(1000));
-        guard.bad();
+        let mut guard = Guard::frozen_for(Duration::from_secs(1000), Duration::from_secs(30));
         assert!(!guard.good_stable(Duration::from_secs(5)));
-        let past = mono::now().saturating_sub(Duration::from_secs(10));
-        guard.stable_since = Some(past);
+        guard.stable_since = Some(Duration::from_secs(990));
         // A bad tick before the gate elapses resets it.
         let _ = guard.bad();
         assert!(!guard.good_stable(Duration::from_secs(5)));
