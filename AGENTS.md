@@ -174,6 +174,9 @@ cargo fmt --all -- --check && cargo clippy --all-targets --locked -- -D warnings
   v0.2.0 binaries reported `0.1.0` because this was forgotten — cost a v0.2.1
   re-release, since re-tagging is forbidden). The binary reports
   `CARGO_PKG_VERSION`, and `shuang update` compares it with the release tag.
+- `fs::rename` does not cross filesystems (EXDEV): temp files that will be
+  renamed over the target must live next to the target, not in `/tmp`
+  (2026-11-05: `shuang update` shipped broken in v0.3.0 because of this).
 - The rest of the flow: CHANGELOG dated → PR → green CI → merge → tag on the
   merged HEAD (once) → verify clean install.
 
