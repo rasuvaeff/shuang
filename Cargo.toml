@@ -55,9 +55,11 @@ notify-rust = "4"
 netlink-packet-route = "0.33"
 netlink-sys = "0.9"
 
-[target.'cfg(windows)'.dependencies]
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 tray-icon = "0.24"
 winit = "0.30"
+
+[target.'cfg(windows)'.dependencies]
 zip = "5"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
