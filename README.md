@@ -161,6 +161,8 @@ Exit codes: `0` clean, `4` leaks found.
 
 ### Web panel
 
+![shuang panel](docs/panel.png)
+
 `shuang daemon` serves a local settings panel: it prints a one-time URL
 (`http://127.0.0.1:<port>/?token=…`) and the tray menu gets an "Open panel"
 item. The panel shows live status (IP, country, quorum, frozen processes),
