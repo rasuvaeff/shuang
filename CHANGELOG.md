@@ -44,7 +44,7 @@
   Windows tray via `tray-icon` (Linux keeps KSNI; macOS tray pending a
   main-thread run loop integration).
 
-## Unreleased
+## 0.2.0 — 2026-11-05
 
 - `shuang update`: self-update from GitHub Releases with mandatory `.sha256`
   verification and atomic replace; strictly user-initiated.
