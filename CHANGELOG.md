@@ -44,6 +44,12 @@
   Windows tray via `tray-icon` (Linux keeps KSNI; macOS tray pending a
   main-thread run loop integration).
 
+## 0.2.1 — 2026-11-05
+
+- Fix: the v0.2.0 binaries reported version `0.1.0` — the `Cargo.toml`
+  version was not bumped for that release. v0.2.1 is the same code with the
+  correct version (and makes `shuang update` from v0.2.0 work).
+
 ## 0.2.0 — 2026-11-05
 
 - `shuang update`: self-update from GitHub Releases with mandatory `.sha256`
