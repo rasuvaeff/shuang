@@ -66,6 +66,8 @@ pub async fn spawn(shared: Shared, config_path: PathBuf, no_panel: bool) -> Opti
         .route("/api/fix", post(run_fix))
         .route("/api/settings", get(get_settings).post(post_settings))
         .route("/api/trust-network", post(trust_network))
+        .route("/api/apps", get(get_apps).post(post_app).delete(delete_app))
+        .route("/api/processes", get(list_processes))
         .with_state(AppState {
             shared,
             token: token.clone(),
@@ -361,6 +363,146 @@ async fn trust_network(State(app): State<AppState>, headers: HeaderMap) -> impl 
     }
 }
 
+async fn get_apps(
+    State(app): State<AppState>,
+    RawQuery(q): RawQuery,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !app.authorized(q.as_deref().unwrap_or(""), &headers) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "forbidden"})),
+        )
+            .into_response();
+    }
+    let cfg = config::load(&app.config_path, false).unwrap_or_default();
+    let state = config::load_state(&app.config_path);
+    let state_names: Vec<&str> = state.apps.iter().map(|a| a.name.as_str()).collect();
+    let apps: Vec<serde_json::Value> = cfg
+        .apps
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "name": a.name,
+                "match": a.r#match,
+                // Panel-added (deletable here) vs hand-written in config.
+                "source": if state_names.contains(&a.name.as_str()) { "panel" } else { "config" },
+            })
+        })
+        .collect();
+    Json(serde_json::json!({"apps": apps})).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct AppBody {
+    name: String,
+    #[serde(rename = "match")]
+    matches: Vec<String>,
+}
+
+async fn post_app(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    body: String,
+) -> impl IntoResponse {
+    if !app.authorized("", &headers) {
+        return (StatusCode::FORBIDDEN, "forbidden").into_response();
+    }
+    let Ok(parsed) = serde_json::from_str::<AppBody>(&body) else {
+        return (StatusCode::BAD_REQUEST, "bad json").into_response();
+    };
+    if parsed.name.trim().is_empty() || parsed.matches.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "name and at least one pattern are required",
+        )
+            .into_response();
+    }
+    let mut state = config::load_state(&app.config_path);
+    let app_spec = config::AppSpec {
+        name: parsed.name.trim().to_string(),
+        r#match: parsed.matches,
+        allow: None,
+    };
+    match state.apps.iter().position(|a| a.name == app_spec.name) {
+        Some(i) => state.apps[i] = app_spec,
+        None => state.apps.push(app_spec),
+    }
+    match config::save_state(&app.config_path, &state) {
+        Ok(()) => (StatusCode::OK, "saved — restart the daemon to apply").into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
+    }
+}
+
+async fn delete_app(
+    State(app): State<AppState>,
+    RawQuery(q): RawQuery,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !app.authorized(q.as_deref().unwrap_or(""), &headers) {
+        return (StatusCode::FORBIDDEN, "forbidden").into_response();
+    }
+    let name = q
+        .as_deref()
+        .unwrap_or_default()
+        .split('&')
+        .filter_map(|p| p.split_once('='))
+        .find(|(k, _)| *k == "name")
+        .map(|(_, v)| v.replace("%20", " "))
+        .unwrap_or_default();
+    let mut state = config::load_state(&app.config_path);
+    let before = state.apps.len();
+    state.apps.retain(|a| a.name != name);
+    if state.apps.len() == before {
+        return (StatusCode::NOT_FOUND, "not a panel-managed app").into_response();
+    }
+    match config::save_state(&app.config_path, &state) {
+        Ok(()) => (StatusCode::OK, "removed".to_string()).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
+    }
+}
+
+/// Running processes for the "add app" picker: unique executable names,
+/// excluding shuang itself and kernel-ish entries.
+async fn list_processes(
+    State(app): State<AppState>,
+    RawQuery(q): RawQuery,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !app.authorized(q.as_deref().unwrap_or(""), &headers) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "forbidden"})),
+        )
+            .into_response();
+    }
+    let system = sysinfo::System::new_all();
+    let me = std::process::id();
+    let mut seen = std::collections::BTreeMap::new();
+    for (pid, process) in system.processes() {
+        let pid_u32 = pid.as_u32();
+        if pid_u32 == me || process.exe().is_none() {
+            continue;
+        }
+        let name = process.name().to_string_lossy();
+        let name = name.strip_suffix(".exe").unwrap_or(&name).to_string();
+        // Pattern hint: bare name; args: form when the cmdline carries a path.
+        let args = process
+            .cmd()
+            .iter()
+            .map(|s| s.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ");
+        seen.entry(name).or_insert((pid_u32, args));
+    }
+    let list: Vec<serde_json::Value> = seen
+        .into_iter()
+        .take(100)
+        .map(|(name, (pid, args))| serde_json::json!({"name": name, "pid": pid, "args": args}))
+        .collect();
+    Json(serde_json::json!({"processes": list})).into_response()
+}
+
 #[derive(serde::Deserialize)]
 struct AllowBody {
     value: String,
@@ -482,7 +624,12 @@ const PAGE_HTML: &str = r#"<!doctype html>
 <h1>shuang <span>霜</span></h1>
 <div class="card" id="status">loading…</div>
 <div class="card"><strong>Protected apps</strong><ul id="apps"></ul>
-  <div class="muted">Apps are configured in config.toml ([[apps]] sections).</div></div>
+  <form id="addapp"><input type="text" id="appname" placeholder="name (e.g. claude-code)">
+  <input type="text" id="appmatch" placeholder="match pattern (e.g. claude)">
+  <button>Add</button></form>
+  <div style="margin-top:.5rem"><select id="procpick"></select>
+  <button onclick="pickProcess()">Add from running processes</button></div>
+  <div class="muted">Panel-added apps live in state.toml; [[apps]] in config.toml still applies. Restart the daemon to apply changes.</div></div>
 <div class="card"><strong>Allowed</strong>
   <ul id="allow"></ul>
   <form id="add"><input type="text" id="value" placeholder="IP, subnet (1.2.3.0/24), or country (NL)">
@@ -594,12 +741,49 @@ async function saveSettings() {
     body: JSON.stringify(body) });
   alert(await r.text());
 }
+async function loadApps() {
+  const r = await (await fetch('/api/apps', { headers: H })).json();
+  const ul = document.getElementById('apps');
+  ul.innerHTML = (r.apps || []).map(a =>
+    `<li><span>${a.name} <span class="muted">${a.match.join(', ')} (${a.source})</span></span>` +
+    (a.source === 'panel' ? `<button onclick="delApp('${a.name}')">×</button>` : '') +
+    `</li>`).join('') || '<li class="muted">none</li>';
+  const p = await (await fetch('/api/processes', { headers: H })).json();
+  document.getElementById('procpick').innerHTML = (p.processes || []).map(x =>
+    `<option value="${x.name}">${x.name} (${x.args.slice(0, 40)})</option>`).join('');
+}
+document.getElementById('addapp').onsubmit = async (e) => {
+  e.preventDefault();
+  const name = document.getElementById('appname').value.trim();
+  const m = document.getElementById('appmatch').value.trim();
+  if (!name || !m) return;
+  const r = await fetch('/api/apps', { method: 'POST', headers: H,
+    body: JSON.stringify({ name, match: [m] }) });
+  if (!r.ok) alert(await r.text());
+  document.getElementById('appname').value = '';
+  document.getElementById('appmatch').value = '';
+  loadApps();
+};
+async function delApp(name) {
+  const r = await fetch('/api/apps?name=' + encodeURIComponent(name) + '&token=' + token,
+    { method: 'DELETE', headers: H });
+  if (!r.ok) alert(await r.text());
+  loadApps();
+}
+async function pickProcess() {
+  const name = document.getElementById('procpick').value;
+  if (!name) return;
+  const r = await fetch('/api/apps', { method: 'POST', headers: H,
+    body: JSON.stringify({ name: name, match: [name] }) });
+  if (!r.ok) alert(await r.text());
+  loadApps();
+}
 async function trustNetwork() {
   const r = await fetch('/api/trust-network', { method: 'POST', headers: H });
   alert(await r.text());
   loadSettings();
 }
-refresh(); loadSettings(); setInterval(refresh, 3000);
+refresh(); loadSettings(); loadApps(); setInterval(refresh, 3000);
 </script>
 </body>
 </html>"#;
