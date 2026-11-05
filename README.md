@@ -225,7 +225,7 @@ Point `ip_services` at your own plain-text endpoint if you prefer.
 | Platform | Suspend | Tray | Notes |
 |---|---|---|---|
 | Linux | ✅ | ✅ (KSNI) | netlink instant reaction, gateway MAC, resolv.conf DNS check |
-| macOS | ✅ | 🚧 | polling only |
+| macOS | ✅ | ✅ (tray-icon, main-thread loop) | config-poll network events |
 | Windows | ✅ (`NtSuspendProcess`) | 🚧 | being verified in CI |
 | HarmonyOS PC | 📋 | — | possible later via `aarch64-unknown-linux-ohos` |
 

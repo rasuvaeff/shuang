@@ -207,7 +207,7 @@ trusted_networks = ["aa:bb:cc:dd:ee:ff"]   # 关闭保护的路由器 MAC(家/�
 | 平台 | 挂起 | 托盘 | 说明 |
 |---|---|---|---|
 | Linux | ✅ | ✅(KSNI) | netlink 即时响应、网关 MAC、resolv.conf DNS 检查 |
-| macOS | ✅ | 🚧 | 仅轮询 |
+| macOS | ✅ | ✅(tray-icon,主线程循环)| 网络事件通过配置轮询 |
 | Windows | ✅(`NtSuspendProcess`) | 🚧 | CI 中验证 |
 | HarmonyOS PC | 📋 | — | 之后可通过 `aarch64-unknown-linux-ohos` 支持 |
 

@@ -44,11 +44,14 @@
   Windows tray via `tray-icon` (Linux keeps KSNI; macOS tray pending a
   main-thread run loop integration).
 
+## Unreleased
+
+- `shuang update`: self-update from GitHub Releases with mandatory `.sha256`
+  verification and atomic replace; strictly user-initiated.
+- Panel: manage protected apps — `[[apps]]` in `state.toml` merged with the
+  config, a picker of running processes, per-source labels and deletion.
+- macOS tray: the daemon runs on a worker thread while the winit event loop
+  owns the main thread (tray-icon).
+
 ## Planned
 
-- Panel: manage protected apps — `[[apps]]` in `state.toml` merged with the
-  config (same never-rewrite-config pattern as settings), plus a picker of
-  running processes with auto-generated match patterns.
-- `shuang update`: check GitHub Releases, download the platform binary,
-  verify the published `.sha256`, atomically replace self (explicit,
-  user-initiated — no background checks).
