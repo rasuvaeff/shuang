@@ -24,7 +24,7 @@ use crate::{
     net::{self, Allowlist},
     netwatch,
     notify::Notifier,
-    panel, platform, procs,
+    panel, platform, probe, procs,
     supervisor::{Frozen, Shutdown},
     tray::{self, TrayHandle},
     trusted,
@@ -105,7 +105,9 @@ pub async fn run(
     }
 
     let (net_tx, mut net_rx) = tokio::sync::mpsc::unbounded_channel();
-    netwatch::spawn(net_tx);
+    netwatch::spawn(net_tx.clone());
+    let (probe_tx, mut probe_rx) = tokio::sync::mpsc::unbounded_channel();
+    probe::spawn(&cfg.probe, probe_tx);
     let mut shutdown = Shutdown::new()?;
 
     eprintln!(
@@ -119,7 +121,30 @@ pub async fn run(
     );
 
     let mut event_pending = false;
+    let mut probe_down = false;
     loop {
+        // Probe-down always freezes (a dead transport leaks nothing good);
+        // paranoid mode additionally freezes on plain network events.
+        if probe_down && !trusted::is_trusted(&cfg.trusted_networks) {
+            let state = probe::classify(&cfg.ip_check.ip_services, cfg.ip_check.timeout_secs).await;
+            let reason = state
+                .map(|s| s.message().to_string())
+                .unwrap_or_else(|| "transport probe failed".to_string());
+            eprintln!("shuang: {reason}");
+            log_event(
+                config_path,
+                state.map(|s| s.event_kind()).unwrap_or("probe-down"),
+                &reason,
+            );
+            for app in cfg.apps.iter() {
+                for (_, pid) in procs::find_targets(&app.r#match, &system_snapshot()) {
+                    let tree = procs::tree(pid, &system_snapshot());
+                    frozen.freeze_tree(&tree, &app.name);
+                }
+            }
+            guards_rotate(&mut guards);
+            let _ = frozen.persist(config_path);
+        }
         // Paranoid mode: freeze FIRST on a network event, verify after.
         if event_pending
             && cfg.timing.freeze_on_event_first
@@ -135,8 +160,6 @@ pub async fn run(
             guards_rotate(&mut guards);
             let _ = frozen.persist(config_path);
         }
-        event_pending = false;
-
         let mut verdict = ipcheck::check(&cfg.ip_check).await;
         countries.fill(&mut verdict);
         let summary = tray::summary(&verdict);
@@ -177,7 +200,9 @@ pub async fn run(
         // Trusted network: protection off, everything resumes.
         if trusted::is_trusted(&cfg.trusted_networks) {
             for guard in guards.iter_mut() {
-                if guard.good() && !frozen.is_empty() {
+                if guard.good_stable(Duration::from_secs(cfg.timing.stability_secs))
+                    && !frozen.is_empty()
+                {
                     frozen.resume_all();
                     let _ = Frozen::persist_cleared(config_path);
                     notifier.resumed();
@@ -187,14 +212,17 @@ pub async fn run(
             }
             tray.status(tray::Status::Ok, &format!("{summary} — trusted network"))
                 .await;
-            wait_tick(
+            let (ev, down) = wait_tick(
                 interval,
                 &mut net_rx,
+                &mut probe_rx,
                 &mut shutdown,
                 &mut frozen,
                 config_path,
             )
             .await;
+            event_pending = ev;
+            probe_down = down;
             continue;
         }
 
@@ -365,14 +393,17 @@ pub async fn run(
             tray.status(tray::Status::Ok, &summary).await;
         }
 
-        wait_tick(
+        let (ev, down) = wait_tick(
             interval,
             &mut net_rx,
+            &mut probe_rx,
             &mut shutdown,
             &mut frozen,
             config_path,
         )
         .await;
+        event_pending = ev;
+        probe_down = down;
     }
 }
 
@@ -383,14 +414,18 @@ pub async fn run(
 async fn wait_tick(
     interval: Duration,
     net_rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>,
+    probe_rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>,
     shutdown: &mut Shutdown,
     frozen: &mut Frozen,
     config_path: &Path,
-) -> bool {
+) -> (bool, bool) {
+    // (net_event, probe_down)
     let mut event = false;
+    let mut down = false;
     tokio::select! {
         _ = tokio::time::sleep(interval) => {},
         _ = net_rx.recv() => { event = true; },
+        _ = probe_rx.recv() => { down = true; },
         _ = shutdown.recv() => {
             eprintln!("shuang: shutting down — resuming frozen processes");
             frozen.resume_all();
@@ -398,7 +433,7 @@ async fn wait_tick(
             std::process::exit(0);
         }
     }
-    event
+    (event, down)
 }
 
 /// Ask every service's edge; None = all traces match the known exits.

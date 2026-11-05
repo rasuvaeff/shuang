@@ -211,12 +211,18 @@ country_services = ["https://api.country.is"]
 [timing]
 grace_secs = 20                     # how long a frozen tree waits for the right IP
 freeze_on_event_first = false        # paranoid: freeze on a network event BEFORE re-checking
+stability_secs = 0                   # resume only after a good verdict HOLDS this long
 close_secs = 5                      # polite stop before a forced kill
 
 [profiles.work]                     # `shuang profile work` activates
 countries = ["NL", "DE"]
 
 trusted_networks = ["aa:bb:cc:dd:ee:ff"]   # gateway MACs where protection is off (home/office)
+
+[probe]
+enabled = true          # 1-second TCP transport probe (freeze ~instantly on death)
+hosts = ["1.1.1.1:80", "9.9.9.9:80"]
+distinguish_offline = true   # events say vpn-down vs offline
 
 [watchdog]
 processes = ["v2ray", "clash"]  # freeze when the local proxy client dies (empty = off)

@@ -290,6 +290,8 @@ async fn get_settings(
         "freeze_on_event_first": cfg.timing.freeze_on_event_first,
         "watchdog_processes": cfg.watchdog.processes,
         "reputation_enabled": cfg.reputation.enabled,
+        "stability_secs": cfg.timing.stability_secs,
+        "probe_enabled": cfg.probe.enabled,
         "trusted_networks": state.trusted_networks,
         "gateway_mac": crate::trusted::gateway_mac(),
     }))
@@ -306,6 +308,8 @@ struct SettingsBody {
     freeze_on_event_first: Option<bool>,
     watchdog_processes: Option<Vec<String>>,
     reputation_enabled: Option<bool>,
+    stability_secs: Option<u64>,
+    probe_enabled: Option<bool>,
 }
 
 async fn post_settings(
@@ -356,6 +360,12 @@ async fn post_settings(
     }
     if parsed.reputation_enabled.is_some() {
         s.reputation_enabled = parsed.reputation_enabled;
+    }
+    if parsed.stability_secs.is_some() {
+        s.stability_secs = parsed.stability_secs;
+    }
+    if parsed.probe_enabled.is_some() {
+        s.probe_enabled = parsed.probe_enabled;
     }
     match config::save_state(&app.config_path, &state) {
         Ok(()) => (StatusCode::OK, "saved — restart the daemon to apply").into_response(),
@@ -673,6 +683,8 @@ const PAGE_HTML: &str = r#"<!doctype html>
     <label style="margin-left:1rem"><input type="checkbox" id="s_reputation"> reputation guard</label></div>
   <div style="margin-top:.5rem">watchdog processes (comma-separated, e.g. v2ray, clash — empty = off)
     <input type="text" id="s_watchdog" style="width:100%"></div>
+  <div style="margin-top:.5rem"><label><input type="checkbox" id="s_probe"> fast probe (1s transport check)</label>
+    · stability gate <input type="number" id="s_stability" style="width:4rem"> s</div>
   <div style="margin-top:.6rem"><button onclick="saveSettings()">Save settings</button>
        <button onclick="trustNetwork()">Trust this network</button>
        <span class="muted" id="trusted_macs"></span></div></div>
@@ -759,6 +771,8 @@ async function loadSettings() {
   document.getElementById('s_paranoid').checked = s.freeze_on_event_first;
   document.getElementById('s_reputation').checked = s.reputation_enabled;
   document.getElementById('s_watchdog').value = (s.watchdog_processes || []).join(', ');
+  document.getElementById('s_probe').checked = s.probe_enabled;
+  document.getElementById('s_stability').value = s.stability_secs;
   document.getElementById('trusted_macs').textContent =
     s.trusted_networks.length ? 'trusted: ' + s.trusted_networks.join(', ') : '';
 }
@@ -773,6 +787,8 @@ async function saveSettings() {
     reputation_enabled: document.getElementById('s_reputation').checked,
     watchdog_processes: document.getElementById('s_watchdog').value.split(',')
       .map(s => s.trim()).filter(s => s.length > 0),
+    probe_enabled: document.getElementById('s_probe').checked,
+    stability_secs: +document.getElementById('s_stability').value,
   };
   const r = await fetch('/api/settings', { method: 'POST', headers: H,
     body: JSON.stringify(body) });

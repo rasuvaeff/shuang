@@ -97,5 +97,14 @@
 - All four are panel-editable (Settings card) and live in `state.toml`
   overrides; nothing requires editing config.toml.
 
+## Unreleased
+
+- Stability gate (`stability_secs`): after a freeze, the resume waits for
+  the good verdict to hold — a flapping exit never resumes the trees.
+- Fast transport probe (`[probe]`): a 1-second direct TCP ping that freezes
+  the instant the transport dies (vs ~10 s of IP-check timeouts), and
+  classifies `vpn-down` vs `offline` in events.
+- Panel: probe toggle and stability seconds next to the existing guards.
+
 ## Planned
 

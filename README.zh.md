@@ -196,12 +196,18 @@ country_services = ["https://api.country.is"]
 [timing]
 grace_secs = 20                     # 冻结后等待正确 IP 的时间
 freeze_on_event_first = false        # 偏执模式:网络事件先冻结、再复查
+stability_secs = 0                   # 仅在判定稳定 N 秒后才恢复
 close_secs = 5                      # 强制杀死前的优雅停止时间
 
 [profiles.work]                     # `shuang profile work` 激活
 countries = ["NL", "DE"]
 
 trusted_networks = ["aa:bb:cc:dd:ee:ff"]   # 关闭保护的路由器 MAC(家/办公室)
+
+[probe]
+enabled = true          # 1-second TCP transport probe (freeze ~instantly on death)
+hosts = ["1.1.1.1:80", "9.9.9.9:80"]
+distinguish_offline = true   # events say vpn-down vs offline
 
 [watchdog]
 processes = ["v2ray", "clash"]  # freeze when the local proxy client dies (empty = off)

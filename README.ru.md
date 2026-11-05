@@ -210,12 +210,18 @@ country_services = ["https://api.country.is"]
 [timing]
 grace_secs = 20                     # сколько замороженное ждёт правильный IP
 freeze_on_event_first = false        # паранойя: заморозка при событии сети ДО перепроверки
+stability_secs = 0                   # разморозка только после N секунд стабильного вердикта
 close_secs = 5                      # вежливая остановка перед принудительной
 
 [profiles.work]                     # `shuang profile work` активирует
 countries = ["NL", "DE"]
 
 trusted_networks = ["aa:bb:cc:dd:ee:ff"]   # MAC роутеров, где защита выключена (дом/офис)
+
+[probe]
+enabled = true          # 1-second TCP transport probe (freeze ~instantly on death)
+hosts = ["1.1.1.1:80", "9.9.9.9:80"]
+distinguish_offline = true   # events say vpn-down vs offline
 
 [watchdog]
 processes = ["v2ray", "clash"]  # freeze when the local proxy client dies (empty = off)
