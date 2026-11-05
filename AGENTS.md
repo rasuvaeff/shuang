@@ -180,6 +180,13 @@ cargo fmt --all -- --check && cargo clippy --all-targets --locked -- -D warnings
 - The rest of the flow: CHANGELOG dated → PR → green CI → merge → tag on the
   merged HEAD (once) → verify clean install.
 
+## CI quirks
+
+- **macOS jobs sometimes hang for exactly 15m01s and fail with no logs**
+  (GitHub-hosted arm64 runner congestion; seen on code PRs and image-only
+  PRs alike, 2026-11-05). The fix is `gh run rerun <id> --failed` — do not
+  hunt for a code cause when the failure carries no compiler/test output.
+
 ## When you finish
 
 - Update `README.md`, `README.ru.md`, **and `README.zh.md`** (same commit) and
