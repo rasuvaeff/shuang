@@ -168,6 +168,15 @@ cargo fmt --all -- --check && cargo clippy --all-targets --locked -- -D warnings
   build if HarmonyOS PC demand appears.
 - Out of scope by design: any cloud component, accounts, telemetry.
 
+## Releases
+
+- Bump `version` in `Cargo.toml` **in the release commit** (2026-11-05: the
+  v0.2.0 binaries reported `0.1.0` because this was forgotten — cost a v0.2.1
+  re-release, since re-tagging is forbidden). The binary reports
+  `CARGO_PKG_VERSION`, and `shuang update` compares it with the release tag.
+- The rest of the flow: CHANGELOG dated → PR → green CI → merge → tag on the
+  merged HEAD (once) → verify clean install.
+
 ## When you finish
 
 - Update `README.md`, `README.ru.md`, **and `README.zh.md`** (same commit) and
