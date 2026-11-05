@@ -83,7 +83,7 @@
 - `shuang update` self-update (from 0.2.x), panel-managed protected apps,
   macOS tray — shipped in 0.2.x, listed for completeness.
 
-## Unreleased
+## 0.4.0 — 2026-11-05
 
 - Proxy-client watchdog (`[watchdog] processes`): freeze when the local
   v2ray/clash/… client dies — its death may not move routes, so netlink
