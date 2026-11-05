@@ -21,7 +21,7 @@ pub enum Status {
 }
 
 impl Status {
-    #[cfg(any(unix, test))]
+    #[cfg(any(target_os = "linux", test))]
     fn icon_name(self) -> &'static str {
         // Stock freedesktop icon names present in Ubuntu's theme.
         match self {
@@ -209,7 +209,7 @@ pub fn summary(verdict: &Verdict) -> String {
     format!("{ip} ({country})")
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 struct ShuangTray {
     status: Status,
     detail: String,
@@ -236,8 +236,7 @@ fn open_url(url: &str) {
     let _ = cmd.spawn();
 }
 
-#[cfg(unix)]
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 impl ksni::Tray for ShuangTray {
     fn id(&self) -> String {
         "shuang".to_string()
@@ -306,12 +305,12 @@ pub enum Msg {
 /// Handle to the (possibly headless) tray.
 #[derive(Clone)]
 pub struct TrayHandle {
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     inner: Option<ksni::Handle<ShuangTray>>,
     #[cfg(any(windows, target_os = "macos"))]
     inner: Option<winit::event_loop::EventLoopProxy<Msg>>,
-    /// macOS: headless for now (see the platform table in README).
-    #[cfg(not(any(unix, windows)))]
+    /// Everything else (none today): headless.
+    #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
     inner: Option<()>,
     quit: Arc<AtomicBool>,
 }
@@ -336,15 +335,22 @@ impl TrayHandle {
             Self { inner: proxy, quit }
         }
 
-        // macOS: the tray needs a main-thread run loop, which a daemon
-        // binary does not own — headless until a GUI-focused integration.
-        #[cfg(not(any(unix, windows)))]
+        // macOS: `main.rs` builds the tray on the main thread and hands it to
+        // the daemon; if that did not happen, run headless rather than panic.
+        #[cfg(target_os = "macos")]
+        {
+            eprintln!("shuang: tray must be built on the main thread — running headless");
+            Self { inner: None, quit }
+        }
+
+        #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
         {
             eprintln!("shuang: tray is not available on this platform yet — running headless");
             Self { inner: None, quit }
         }
 
         #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         let tray = ShuangTray {
             status: Status::Ok,
             detail: "starting…".to_string(),
@@ -372,7 +378,7 @@ impl TrayHandle {
         if let Some(proxy) = &self.inner {
             let _ = proxy.send_event(Msg::Status(status, detail.to_string()));
         }
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         if let Some(handle) = &self.inner {
             let detail = detail.to_string();
             handle
@@ -390,7 +396,7 @@ impl TrayHandle {
         if let Some(proxy) = &self.inner {
             let _ = proxy.send_event(Msg::PanelUrl(url.to_string()));
         }
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         if let Some(handle) = &self.inner {
             let url = url.to_string();
             let _ = handle.update(move |tray| tray.panel_url = Some(url)).await;
