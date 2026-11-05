@@ -31,6 +31,16 @@ curl -fsSL https://raw.githubusercontent.com/rasuvaeff/shuang/master/scripts/ins
 下载会与发布版附带的 `.sha256` 校验;不匹配则拒绝安装。可用 `INSTALL_DIR=…`
 覆盖安装目录,用 `VERSION=vX.Y.Z` 固定版本。
 
+### Windows(PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/rasuvaeff/shuang/master/scripts/install.ps1 | iex
+```
+
+安装到用户目录(无需管理员权限)并自动加入用户 `PATH`。预编译的
+`x86_64-pc-windows-msvc` 二进制在 [Releases](https://github.com/rasuvaeff/shuang/releases)
+页面;安装器安装前会校验发布的 `.sha256`。
+
 ### Cargo
 
 ```bash

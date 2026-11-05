@@ -35,6 +35,17 @@ curl -fsSL https://raw.githubusercontent.com/rasuvaeff/shuang/master/scripts/ins
 Скачивание сверяется с `.sha256` из релиза; несовпадение — отказ установки.
 Каталог переопределяется `INSTALL_DIR=…`, версия пинится `VERSION=vX.Y.Z`.
 
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/rasuvaeff/shuang/master/scripts/install.ps1 | iex
+```
+
+Ставится в профиль пользователя (без прав администратора) и добавляет себя в
+`PATH`. Готовые бинарники `x86_64-pc-windows-msvc` — на странице
+[Releases](https://github.com/rasuvaeff/shuang/releases); installer перед
+установкой сверяет опубликованный `.sha256`.
+
 ### Cargo
 
 ```bash
