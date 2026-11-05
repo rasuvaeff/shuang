@@ -87,6 +87,9 @@ pub enum Command {
         #[arg(long)]
         tail: usize,
     },
+    /// Self-update: download the latest release binary for this platform,
+    /// verify the published .sha256, and replace this executable.
+    Update,
     /// Environment diagnostics: config, IP quorum, country, timezone,
     /// gateway MAC, D-Bus. Exit 0 healthy, 4 problems found.
     Doctor,
