@@ -54,11 +54,8 @@ async fn main() -> ExitCode {
         no_panel,
     } = &cli.command
     {
-        if let Some(parts) = tray::macos_main::build() {
-            let tray_handle = tray::TrayHandle::from_proxy(
-                parts.proxy.clone(),
-                std::sync::Arc::clone(&parts.quit),
-            );
+        if let Some(main_tray) = tray::macos_main::build() {
+            let tray_handle = tray::TrayHandle::from_main(&main_tray);
             let path = path.clone();
             let no_notify = *no_notify;
             let no_panel = *no_panel;
@@ -79,7 +76,7 @@ async fn main() -> ExitCode {
                     }
                 });
             });
-            tray::macos_main::run(parts);
+            tray::macos_main::run(main_tray);
             return ExitCode::from(0);
         }
     }

@@ -1,14 +1,19 @@
-//! Tray icon for the daemon (Linux: KSNI over D-Bus, shown by GNOME via the
-//! AppIndicator extension, natively by KDE/XFCE/Cinnamon).
+//! Tray icon for the daemon.
 //!
-//! The tray is display-only plus Quit: status color (green/orange), IP and
-//! country in the tooltip, freeze reason + grace countdown in the menu label.
-//! Editing settings happens in the panel/CLI, not in the menu.
+//! - Linux: KSNI over D-Bus (GNOME shows it via the AppIndicator extension,
+//!   KDE/XFCE/Cinnamon natively).
+//! - Windows + macOS: the `native` module (tray-icon + a winit event loop).
+//!   Windows runs the loop on a dedicated thread; macOS must own the main
+//!   thread, so `main.rs` builds the parts there (`macos_main`) and runs the
+//!   daemon on a worker.
 //!
-//! When D-Bus is unavailable (a server, SSH without forwarding) or `--no-tray`
-//! is passed, the handle degrades to headless: every method becomes a no-op
-//! and the daemon keeps working — the tray must never be load-bearing for
-//! protection.
+//! The tray is display-only plus Quit/Open panel: status color
+//! (green/orange), IP and country in the tooltip, freeze reason + grace
+//! countdown in the menu label. Editing settings happens in the panel/CLI.
+//!
+//! When the platform tray is unavailable (a server, SSH, `--no-tray`) the
+//! handle degrades to headless: every method becomes a no-op and the daemon
+//! keeps working — the tray must never be load-bearing for protection.
 
 use std::sync::{Arc, atomic::AtomicBool};
 
@@ -29,6 +34,47 @@ impl Status {
             Status::Frozen => "dialog-warning",
         }
     }
+}
+
+/// One-line human summary of a verdict, reused by the tray and the logs.
+pub fn summary(verdict: &Verdict) -> String {
+    let ip = verdict
+        .ipv4
+        .map(|i| i.to_string())
+        .unwrap_or_else(|| "IP unknown".into());
+    let country = verdict.country.as_deref().unwrap_or("??");
+    format!("{ip} ({country})")
+}
+
+/// Open the panel URL in the system browser (best-effort, failures ignored).
+pub fn open_url(url: &str) {
+    #[cfg(target_os = "macos")]
+    let mut cmd = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", "", url]);
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = std::process::Command::new("xdg-open");
+    #[cfg(not(target_os = "windows"))]
+    {
+        cmd.arg(url);
+    }
+    let _ = cmd.spawn();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Windows + macOS: tray-icon over a winit event loop.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Status/detail message for the native (winit) tray loop.
+#[cfg(any(windows, target_os = "macos"))]
+#[derive(Debug, Clone)]
+pub enum Msg {
+    Status(Status, String),
+    PanelUrl(String),
 }
 
 #[cfg(any(windows, target_os = "macos"))]
@@ -58,15 +104,21 @@ mod native {
         out
     }
 
-    /// Everything below stays on the tray thread: tray-icon/muda types are
-    /// `!Send` on Windows (Rc internals). Only the `EventLoopProxy` (Send)
-    /// leaves through the channel.
+    /// Lives on the tray thread: tray-icon/muda types are `!Send`.
     pub(super) struct App {
         tray: Option<tray_icon::TrayIcon>,
         status_item: tray_icon::menu::MenuItem,
         panel_item: tray_icon::menu::MenuItem,
         panel_url: Option<String>,
-        quit: Arc<AtomicBool>,
+        pub(super) quit: Arc<AtomicBool>,
+    }
+
+    /// Everything `build` needs to hand back to the caller before the loop
+    /// starts; `run` consumes it on the loop thread.
+    pub(super) struct Parts {
+        pub event_loop: winit::event_loop::EventLoop<Msg>,
+        pub proxy: winit::event_loop::EventLoopProxy<Msg>,
+        pub app: App,
     }
 
     impl winit::application::ApplicationHandler<Msg> for App {
@@ -116,24 +168,9 @@ mod native {
         }
     }
 
-    /// Spawn the tray on a dedicated thread (Windows allows a message loop
-    /// on any thread). Returns the proxy for status updates, or None when
-    /// the tray failed to start.
-    pub fn spawn(quit: Arc<AtomicBool>) -> Option<winit::event_loop::EventLoopProxy<Msg>> {
-        let (tx, rx) = std::sync::mpsc::channel::<Option<winit::event_loop::EventLoopProxy<Msg>>>();
-        std::thread::spawn(move || {
-            let started = build_and_run(Arc::clone(&quit));
-            let _ = tx.send(started);
-        });
-        rx.recv_timeout(std::time::Duration::from_secs(5))
-            .ok()
-            .flatten()
-    }
-
-    /// Build the loop/menu/tray on THIS thread and run it. The proxy is
-    /// returned to the caller before the loop starts; `None` means the tray
-    /// could not be created. The Ok arm never returns (run_app blocks).
-    fn build_and_run(quit: Arc<AtomicBool>) -> Option<winit::event_loop::EventLoopProxy<Msg>> {
+    /// Build the loop/menu/tray on THIS thread (Windows: any thread; macOS:
+    /// the main thread only). `None` = tray could not be created.
+    pub(super) fn build(quit: Arc<AtomicBool>) -> Option<Parts> {
         let event_loop = winit::event_loop::EventLoop::with_user_event()
             .build()
             .ok()?;
@@ -148,66 +185,89 @@ mod native {
         let _ = menu.append(&panel_item);
         let _ = menu.append(&quit_item);
 
-        let Ok(icon) = tray_icon::Icon::from_rgba(icon_rgba(Status::Ok), 32, 32) else {
-            return Some(proxy);
-        };
         let tray = tray_icon::TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_tooltip("shuang")
-            .with_icon(icon)
+            .with_icon(tray_icon::Icon::from_rgba(icon_rgba(Status::Ok), 32, 32).ok()?)
             .build()
             .ok()?;
 
-        let mut app = App {
-            tray: Some(tray),
-            status_item,
-            panel_item,
-            panel_url: None,
-            quit,
-        };
-        let _ = event_loop.run_app(&mut app);
-        None
+        Some(Parts {
+            event_loop,
+            proxy,
+            app: App {
+                tray: Some(tray),
+                status_item,
+                panel_item,
+                panel_url: None,
+                quit,
+            },
+        })
+    }
+
+    /// Run the event loop until exit (blocks; consumes the parts).
+    pub(super) fn run(mut parts: Parts) {
+        let _ = parts.event_loop.run_app(&mut parts.app);
+    }
+
+    /// Windows: spawn the tray on a dedicated thread (a message loop may run
+    /// on any thread there). Returns the proxy, or None when it failed.
+    #[cfg(windows)]
+    pub fn spawn_threaded(quit: Arc<AtomicBool>) -> Option<winit::event_loop::EventLoopProxy<Msg>> {
+        let (tx, rx) = std::sync::mpsc::channel::<Option<winit::event_loop::EventLoopProxy<Msg>>>();
+        std::thread::spawn(move || {
+            // Build and keep running on this thread: only the (Send) proxy
+            // crosses back.
+            let started = build(Arc::clone(&quit)).map(|parts| {
+                let proxy = parts.proxy.clone();
+                std::thread::spawn(move || run(parts));
+                proxy
+            });
+            let _ = tx.send(started);
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .ok()
+            .flatten()
     }
 }
 
-#[cfg(windows)]
-use native as win_tray;
-
-/// macOS: winit's event loop must run on the main thread. `main.rs` builds
-/// the tray parts here (main thread), runs the daemon on a worker, and then
-/// blocks in `run` — see the Daemon dispatch in `main.rs`.
+/// macOS: winit's event loop must run on the main thread. `main.rs` calls
+/// `macos_main::build` there, runs the daemon on a worker thread, and then
+/// blocks in `macos_main::run`.
 #[cfg(target_os = "macos")]
 pub mod macos_main {
-    use super::{Msg, native};
+    use super::Msg;
+    use super::native::{self, Parts};
 
-    pub struct MainTrayParts {
-        pub event_loop: winit::event_loop::EventLoop<Msg>,
-        pub proxy: winit::event_loop::EventLoopProxy<Msg>,
-        pub app: native::App,
-        pub quit: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub struct MainTray {
+        parts: Parts,
     }
 
-    /// Build on the main thread. `None` = no tray (headless).
-    pub fn build() -> Option<MainTrayParts> {
+    impl MainTray {
+        pub fn proxy(&self) -> winit::event_loop::EventLoopProxy<Msg> {
+            self.parts.proxy.clone()
+        }
+
+        pub fn quit_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+            std::sync::Arc::clone(&self.parts.app.quit)
+        }
+    }
+
+    /// Build on the main thread. `None` = no tray (headless fallback).
+    pub fn build() -> Option<MainTray> {
         let quit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        native::build(quit)
+        native::build(quit).map(|parts| MainTray { parts })
     }
 
     /// Run the event loop on the main thread (blocks until exit).
-    pub fn run(mut parts: MainTrayParts) {
-        let _ = parts.event_loop.run_app(&mut parts.app);
+    pub fn run(tray: MainTray) {
+        native::run(tray.parts);
     }
 }
 
-/// One-line human summary of a verdict, reused by the tray and the logs.
-pub fn summary(verdict: &Verdict) -> String {
-    let ip = verdict
-        .ipv4
-        .map(|i| i.to_string())
-        .unwrap_or_else(|| "IP unknown".into());
-    let country = verdict.country.as_deref().unwrap_or("??");
-    format!("{ip} ({country})")
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// Linux: KSNI (D-Bus).
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(target_os = "linux")]
 struct ShuangTray {
@@ -215,25 +275,6 @@ struct ShuangTray {
     detail: String,
     panel_url: Option<String>,
     quit: Arc<AtomicBool>,
-}
-
-/// Open the panel URL in the system browser (best-effort, failures ignored).
-fn open_url(url: &str) {
-    #[cfg(target_os = "macos")]
-    let mut cmd = std::process::Command::new("open");
-    #[cfg(target_os = "windows")]
-    let mut cmd = {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", "", url]);
-        c
-    };
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let mut cmd = std::process::Command::new("xdg-open");
-    #[cfg(not(target_os = "windows"))]
-    {
-        cmd.arg(url);
-    }
-    let _ = cmd.spawn();
 }
 
 #[cfg(target_os = "linux")]
@@ -294,13 +335,9 @@ impl ksni::Tray for ShuangTray {
     }
 }
 
-/// Status/detail message for the Windows tray thread.
-#[cfg(any(windows, target_os = "macos"))]
-#[derive(Debug, Clone)]
-pub enum Msg {
-    Status(crate::tray::Status, String),
-    PanelUrl(String),
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// The platform-agnostic handle.
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// Handle to the (possibly headless) tray.
 #[derive(Clone)]
@@ -309,17 +346,15 @@ pub struct TrayHandle {
     inner: Option<ksni::Handle<ShuangTray>>,
     #[cfg(any(windows, target_os = "macos"))]
     inner: Option<winit::event_loop::EventLoopProxy<Msg>>,
-    /// Everything else (none today): headless.
-    #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
-    inner: Option<()>,
     quit: Arc<AtomicBool>,
 }
 
 impl TrayHandle {
-    /// Spawn the tray unless suppressed. No D-Bus session (servers, plain
-    /// SSH) → headless with a warning, never an error: protection runs on.
-    /// Async end to end: ksni's async API runs on our tokio runtime (the
-    /// `blocking` facade panics when called from inside a runtime).
+    /// Spawn the tray unless suppressed. Missing platform tray → headless
+    /// with a warning, never an error: protection runs on.
+    ///
+    /// Async end to end on Linux: ksni's async API runs on our tokio runtime
+    /// (its `blocking` facade panics inside a runtime).
     pub async fn spawn(no_tray: bool) -> Self {
         let quit = Arc::new(AtomicBool::new(false));
         if no_tray {
@@ -328,47 +363,57 @@ impl TrayHandle {
 
         #[cfg(windows)]
         {
-            let proxy = win_tray::spawn(Arc::clone(&quit));
+            let proxy = native::spawn_threaded(Arc::clone(&quit));
             if proxy.is_none() {
                 eprintln!("shuang: no tray icon — running headless");
             }
-            Self { inner: proxy, quit }
+            return Self { inner: proxy, quit };
         }
 
         // macOS: `main.rs` builds the tray on the main thread and hands it to
-        // the daemon; if that did not happen, run headless rather than panic.
+        // the daemon; landing here means that did not happen — headless.
         #[cfg(target_os = "macos")]
         {
             eprintln!("shuang: tray must be built on the main thread — running headless");
-            Self { inner: None, quit }
+            return Self { inner: None, quit };
         }
 
+        // Any other platform: headless.
         #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
         {
-            eprintln!("shuang: tray is not available on this platform yet — running headless");
+            eprintln!("shuang: tray is not available on this platform — running headless");
             Self { inner: None, quit }
         }
 
-        #[cfg(unix)]
+        // Linux: fall through to the ksni arm below.
         #[cfg(target_os = "linux")]
-        let tray = ShuangTray {
-            status: Status::Ok,
-            detail: "starting…".to_string(),
-            panel_url: None,
-            quit: Arc::clone(&quit),
-        };
-        #[cfg(unix)]
-        use ksni::TrayMethods as _;
-        #[cfg(unix)]
-        match tray.spawn().await {
-            Ok(handle) => Self {
-                inner: Some(handle),
-                quit,
-            },
-            Err(err) => {
-                eprintln!("shuang: no tray icon ({err}) — running headless");
-                Self { inner: None, quit }
+        {
+            let tray = ShuangTray {
+                status: Status::Ok,
+                detail: "starting…".to_string(),
+                panel_url: None,
+                quit: Arc::clone(&quit),
+            };
+            use ksni::TrayMethods as _;
+            match tray.spawn().await {
+                Ok(handle) => Self {
+                    inner: Some(handle),
+                    quit,
+                },
+                Err(err) => {
+                    eprintln!("shuang: no tray icon ({err}) — running headless");
+                    Self { inner: None, quit }
+                }
             }
+        }
+    }
+
+    /// macOS: assemble from the parts built on the main thread.
+    #[cfg(target_os = "macos")]
+    pub fn from_main(tray: &crate::tray::macos_main::MainTray) -> Self {
+        Self {
+            inner: Some(tray.proxy()),
+            quit: tray.quit_flag(),
         }
     }
 
@@ -403,18 +448,6 @@ impl TrayHandle {
         }
     }
 
-    /// macOS: assemble from the parts built on the main thread.
-    #[cfg(target_os = "macos")]
-    pub fn from_proxy(
-        proxy: winit::event_loop::EventLoopProxy<Msg>,
-        quit: Arc<AtomicBool>,
-    ) -> Self {
-        Self {
-            inner: Some(proxy),
-            quit,
-        }
-    }
-
     /// Shared quit flag, set by the tray's Quit menu item.
     pub fn quit_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.quit)
@@ -430,7 +463,8 @@ mod tests {
         let handle = TrayHandle::spawn(true).await;
         assert!(handle.inner.is_none());
         // Must not panic:
-        handle.status(Status::Frozen, "no D-Bus").await;
+        handle.status(Status::Frozen, "no tray").await;
+        handle.set_panel_url("http://127.0.0.1:1/").await;
         assert!(!handle.quit_flag().load(std::sync::atomic::Ordering::SeqCst));
     }
 
