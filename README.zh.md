@@ -201,11 +201,15 @@ close_secs = 5                      # 强制杀死前的优雅停止时间
 countries = ["NL", "DE"]
 
 trusted_networks = ["aa:bb:cc:dd:ee:ff"]   # 关闭保护的路由器 MAC(家/办公室)
+
+[route_check]
+enabled = true          # freeze when the AI edge sees a foreign address (split routing)
+every_secs = 30
 ```
 
-**按应用的规则相互独立**:一个应用被冻结时另一个可以继续运行。
-**可信网络**通过路由器 MAC 识别 —— 在家关闭保护,到咖啡馆自动恢复(Linux;
-其他平台 fail closed)。**配置档**一条命令切换白名单集合;选择保存在
+**按应用的规则相互独立**:一个应用被冻结时另一个可以继续运行(在面板
+中添加应用时可设置仅限国家)。**可信网络**通过路由器 MAC 识别 —— 在家
+关闭保护,到咖啡馆自动恢复(Linux、macOS、Windows)。**配置档**一条命令切换白名单集合;选择保存在
 `state.toml` 里,你带注释的配置文件永远不会被改写。
 
 ## 可靠性模型

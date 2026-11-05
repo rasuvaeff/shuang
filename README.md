@@ -216,11 +216,16 @@ close_secs = 5                      # polite stop before a forced kill
 countries = ["NL", "DE"]
 
 trusted_networks = ["aa:bb:cc:dd:ee:ff"]   # gateway MACs where protection is off (home/office)
+
+[route_check]
+enabled = true          # freeze when the AI edge sees a foreign address (split routing)
+every_secs = 30
 ```
 
 **Per-app rules** are independent: one app can be frozen while another keeps
-running. **Trusted networks** are recognized by the router's MAC — at home
-protection is off, in a café it is back on (Linux; fails closed elsewhere).
+running (the panel can set per-app countries when adding an app). **Trusted
+networks** are recognized by the router's MAC — at home protection is off, in
+a café it is back on (Linux, macOS, Windows).
 **Profiles** switch allowlist sets in one command; the selection lives in
 `state.toml`, your commented config is never rewritten.
 

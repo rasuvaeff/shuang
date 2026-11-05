@@ -77,7 +77,10 @@ countries = ["NL", "DE"]
 
 trusted_networks = ["aa:bb:cc:dd:ee:ff"]  # gateway MACs where protection is off
 
-route_check.services = [...]  # default: claude.ai, api.anthropic.com, chatgpt.com, api.openai.com, www.perplexity.ai
+[route_check]
+enabled = true            # daemon freezes on split-routing (trace != exits)
+every_secs = 30
+services = [...]  # default: claude.ai, api.anthropic.com, chatgpt.com, api.openai.com, www.perplexity.ai
 ```
 
 Empty allowlist + `run` = the startup addresses are allowed (freeze on change).
