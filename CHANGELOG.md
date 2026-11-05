@@ -59,6 +59,13 @@
 - macOS tray: the daemon runs on a worker thread while the winit event loop
   owns the main thread (tray-icon).
 
+## 0.3.2 — 2026-11-05
+
+- Fix: desktop notifications crashed the daemon inside the tokio runtime
+  ("Cannot start a runtime from within a runtime"; a production daemon
+  restart-looped 46 times on this). Notifications now go through a dedicated
+  worker thread; a full channel drops the notification instead of blocking.
+
 ## 0.3.1 — 2026-11-05
 
 - Fix: `shuang update` failed with `Invalid cross-device link` when /tmp is a
