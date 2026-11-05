@@ -26,6 +26,9 @@ pub enum Stage {
 pub struct Guard {
     frozen_since: Option<Duration>, // boot-clock timestamp
     grace: Duration,
+    /// When stability gating: the boot-clock time the verdict first turned
+    /// good again (the resume waits for it to hold).
+    stable_since: Option<Duration>,
     #[cfg(test)]
     clock: fn() -> Duration,
 }
@@ -35,6 +38,7 @@ impl Guard {
         Self {
             frozen_since: None,
             grace,
+            stable_since: None,
             #[cfg(test)]
             clock: mono::now,
         }
@@ -47,6 +51,7 @@ impl Guard {
         Self {
             frozen_since: Some(ago), // timestamps before the freeze; bad() computes now - since
             grace,
+            stable_since: None,
             clock: || Duration::from_secs(1_000),
         }
     }
@@ -64,7 +69,30 @@ impl Guard {
     /// The verdict turned good. Returns `true` when a frozen tree must be
     /// resumed (i.e. this call cleared the freeze).
     pub fn good(&mut self) -> bool {
+        self.stable_since = None;
         self.frozen_since.take().is_some()
+    }
+
+    /// Stability-gated resume: `true` only when a freeze is cleared AND the
+    /// verdict has stayed good for `stability` (measured from the first good
+    /// tick after the freeze). A bad tick in between resets the gate — a
+    /// flapping exit never resumes the tree.
+    pub fn good_stable(&mut self, stability: Duration) -> bool {
+        if self.frozen_since.is_none() {
+            return false; // nothing frozen, nothing to resume
+        }
+        if stability.is_zero() {
+            return self.good();
+        }
+        let now = self.now();
+        match self.stable_since {
+            None => {
+                self.stable_since = Some(now);
+                false
+            }
+            Some(since) if now.saturating_sub(since) >= stability => self.good(),
+            Some(_) => false,
+        }
     }
 
     /// The verdict turned bad. Never panics, never sleeps.
@@ -75,6 +103,7 @@ impl Guard {
                 Stage::Freeze
             }
             Some(since) => {
+                self.stable_since = None;
                 let elapsed = self.now().saturating_sub(since);
                 if elapsed >= self.grace {
                     Stage::MustClose
@@ -130,6 +159,40 @@ mod tests {
         assert!(
             matches!(guard.bad(), Stage::Frozen(elapsed) if elapsed > Duration::from_secs(960))
         );
+    }
+
+    #[test]
+    fn stability_gate_waits_and_resets() {
+        let mut guard = Guard::new(Duration::from_secs(1000));
+        guard.bad();
+        // First good tick opens the gate, does not resume.
+        assert!(!guard.good_stable(Duration::from_secs(5)));
+        // Inject the passage of time by rewinding stable_since.
+        let past = mono::now().saturating_sub(Duration::from_secs(10));
+        guard.stable_since = Some(past);
+        assert!(guard.good_stable(Duration::from_secs(5)));
+        // Not frozen anymore → good_stable stays false.
+        assert!(!guard.good_stable(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn stability_gate_resets_on_a_flap() {
+        let mut guard = Guard::new(Duration::from_secs(1000));
+        guard.bad();
+        assert!(!guard.good_stable(Duration::from_secs(5)));
+        let past = mono::now().saturating_sub(Duration::from_secs(10));
+        guard.stable_since = Some(past);
+        // A bad tick before the gate elapses resets it.
+        let _ = guard.bad();
+        assert!(!guard.good_stable(Duration::from_secs(5)));
+        assert!(!guard.good_stable(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn zero_stability_is_immediate() {
+        let mut guard = Guard::new(Duration::from_secs(1000));
+        guard.bad();
+        assert!(guard.good_stable(Duration::ZERO));
     }
 
     #[test]

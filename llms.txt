@@ -72,6 +72,11 @@ timeout_secs = 5
 grace_secs = 20               # CLOCK_BOOTTIME-based: survives laptop sleep
 close_secs = 5
 freeze_on_event_first = false # paranoid: freeze on network event before re-check
+stability_secs = 0            # resume only after the verdict holds N seconds
+
+[probe]
+enabled = false              # 1-second transport probe; also vpn-down vs offline events
+hosts = ["1.1.1.1:80", "9.9.9.9:80"]
 
 [watchdog]
 processes = ["v2ray"]         # freeze when the local proxy client dies

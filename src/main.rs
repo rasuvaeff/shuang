@@ -24,6 +24,7 @@ mod netwatch;
 mod notify;
 mod panel;
 mod platform;
+mod probe;
 mod procs;
 mod profile;
 mod run;

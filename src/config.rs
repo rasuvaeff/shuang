@@ -36,6 +36,9 @@ pub struct Config {
     pub watchdog: WatchdogConfig,
     /// Freeze when the exit IP's reputation degrades (proxy/hosting flags).
     pub reputation: ReputationConfig,
+    /// Fast transport probe: a 1-second TCP ping freezing the instant the
+    /// transport dies; also classifies vpn-down vs offline.
+    pub probe: ProbeConfig,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
@@ -165,6 +168,10 @@ pub struct TimingConfig {
     /// runs after. Zero-leak window at the cost of half-second pauses on
     /// harmless route changes.
     pub freeze_on_event_first: bool,
+    /// Stability gate: after a freeze, a good verdict must HOLD this long
+    /// before the trees resume (0 = resume immediately). A flapping exit
+    /// never resumes — Claude sees one address, not a bouncing one.
+    pub stability_secs: u64,
 }
 
 impl Default for TimingConfig {
@@ -173,6 +180,7 @@ impl Default for TimingConfig {
             grace_secs: 20,
             close_secs: 5,
             freeze_on_event_first: false,
+            stability_secs: 0,
         }
     }
 }
@@ -197,6 +205,29 @@ pub struct ReputationConfig {
     pub fail_flags: Vec<String>,
     /// How often (seconds) to re-check. Default 60.
     pub every_secs: u64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields, default)]
+pub struct ProbeConfig {
+    /// Enable the 1-second transport probe.
+    pub enabled: bool,
+    /// `host:port` pairs probed by a direct TCP connect (no proxy). All
+    /// failing = transport down = instant freeze.
+    pub hosts: Vec<String>,
+    /// When the transport is down, ask one direct (proxy-less) IP check to
+    /// tell `vpn-down` from `offline` in events and messages.
+    pub distinguish_offline: bool,
+}
+
+impl Default for ProbeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            hosts: vec!["1.1.1.1:80".to_string(), "9.9.9.9:80".to_string()],
+            distinguish_offline: true,
+        }
+    }
 }
 
 impl Default for ReputationConfig {
@@ -275,6 +306,10 @@ pub struct SettingsOverride {
     pub watchdog_processes: Option<Vec<String>>,
     /// Exit-IP reputation guard.
     pub reputation_enabled: Option<bool>,
+    /// Stability gate seconds (0 = off).
+    pub stability_secs: Option<u64>,
+    /// Fast transport probe.
+    pub probe_enabled: Option<bool>,
 }
 
 /// Default config path: `$XDG_CONFIG_HOME/shuang/config.toml`, falling back to
@@ -324,6 +359,12 @@ impl Config {
         }
         if let Some(v) = state.settings.reputation_enabled {
             self.reputation.enabled = v;
+        }
+        if let Some(v) = state.settings.stability_secs {
+            self.timing.stability_secs = v;
+        }
+        if let Some(v) = state.settings.probe_enabled {
+            self.probe.enabled = v;
         }
         for mac in &state.trusted_networks {
             if !self.trusted_networks.contains(mac) {
