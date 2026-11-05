@@ -147,6 +147,8 @@ MAC。出口国家不在 Claude 支持列表、以及边缘通过 IPv6 看到你
 
 ### 网页面板
 
+![shuang 面板](docs/panel.png)
+
 `shuang daemon` 会启动一个本地设置面板:stderr 中打印一次性链接
 (`http://127.0.0.1:<端口>/?token=…`),托盘菜单中出现「Open panel」项。
 面板显示实时状态(IP、国家、仲裁、被冻结的进程)、管理白名单(增删 IP、
