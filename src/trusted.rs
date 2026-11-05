@@ -17,8 +17,63 @@ pub fn gateway_mac() -> Option<String> {
     arp_mac(&arp, &gw_ip)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
 pub fn gateway_mac() -> Option<String> {
+    crate::platform::win_net::gateway_mac()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+pub fn gateway_mac() -> Option<String> {
+    None
+}
+
+/// macOS: `route -n get default` names the gateway, `arp` its MAC.
+#[cfg(target_os = "macos")]
+pub fn gateway_mac() -> Option<String> {
+    let route = std::process::Command::new("route")
+        .args(["-n", "get", "default"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&route.stdout).to_string();
+    let gw = route_default_gateway(&text)?;
+    let arp = std::process::Command::new("arp")
+        .arg("-n")
+        .arg(&gw)
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&arp.stdout).to_string();
+    arp_output_mac(&text)
+}
+
+/// Parse `route -n get default`: the `gateway: x.x.x.x` line.
+#[cfg(any(target_os = "macos", test))]
+pub fn route_default_gateway(route_output: &str) -> Option<String> {
+    route_output
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("gateway:"))
+        .map(|ip| ip.trim().to_string())
+        .filter(|ip| ip.parse::<std::net::IpAddr>().is_ok())
+}
+
+/// Parse `arp -n <ip>`: whichever column looks like a MAC
+/// (`aa:bb:cc:dd:ee:ff`) — the column index differs between outputs.
+#[cfg(any(target_os = "macos", test))]
+pub fn arp_output_mac(arp_output: &str) -> Option<String> {
+    for line in arp_output.lines().skip(1) {
+        for col in line.split_whitespace() {
+            let col = col.to_ascii_lowercase();
+            let bytes = col.as_bytes();
+            if bytes.len() == 17
+                && bytes[2] == b':'
+                && bytes[5] == b':'
+                && bytes[8] == b':'
+                && bytes[11] == b':'
+                && bytes[14] == b':'
+            {
+                return Some(col);
+            }
+        }
+    }
     None
 }
 
@@ -100,6 +155,17 @@ mod tests {
             Some("aa:bb:cc:11:22:33")
         );
         assert_eq!(arp_mac(arp, "10.0.0.9"), None);
+    }
+
+    #[test]
+    fn parses_route_and_arp_output() {
+        let route = "   route to: default\ndestination: default\n        gateway: 192.168.1.1\n";
+        assert_eq!(route_default_gateway(route).as_deref(), Some("192.168.1.1"));
+        assert_eq!(route_default_gateway("no gateway here"), None);
+
+        let arp = "Address      HWtype   HWaddress\n192.168.1.1  ether    aa:bb:cc:11:22:33\n";
+        assert_eq!(arp_output_mac(arp).as_deref(), Some("aa:bb:cc:11:22:33"));
+        assert_eq!(arp_output_mac("Address\n(nothing)"), None);
     }
 
     #[test]

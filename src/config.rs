@@ -172,11 +172,19 @@ impl Default for TimingConfig {
 pub struct RouteCheckConfig {
     /// Services whose `/cdn-cgi/trace` is asked where the request came from.
     pub services: Vec<String>,
+    /// When true, the daemon also verifies the AI edge sees one of the known
+    /// exits and freezes on a mismatch (split routing). Off by default —
+    /// enable when your VPN does per-site routing.
+    pub enabled: bool,
+    /// How often (seconds) the daemon re-asks the services. Default 30.
+    pub every_secs: u64,
 }
 
 impl Default for RouteCheckConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
+            every_secs: 30,
             services: [
                 "claude.ai",
                 "api.anthropic.com",
