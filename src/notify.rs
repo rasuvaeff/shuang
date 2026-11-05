@@ -37,12 +37,23 @@ impl Notifier {
     pub fn desktop(enabled: bool) -> Self {
         #[cfg(unix)]
         {
-            Self::new(
-                Box::new(|summary, body, urgency| {
+            // notify-rust BLOCKS on D-Bus and panics when called from inside
+            // the tokio runtime ("Cannot start a runtime from within a
+            // runtime" — v0.3.0 crash-looped on this, 46 systemd restarts).
+            // A dedicated worker thread owns every desktop call.
+            let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+            std::thread::spawn(move || {
+                while let Ok((summary, body)) = rx.recv() {
                     let mut n = notify_rust::Notification::new();
-                    n.summary(summary).body(body);
+                    n.summary(&summary).body(&body);
                     let _ = n.show();
-                    let _ = urgency; // notify-rust sends urgency via hint
+                }
+            });
+            Self::new(
+                Box::new(move |summary, body, _urgency| {
+                    // A full channel means the desktop is unresponsive: drop
+                    // the notification rather than block (or crash) the daemon.
+                    let _ = tx.send((summary.to_string(), body.to_string()));
                 }),
                 enabled,
             )
