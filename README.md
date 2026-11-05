@@ -104,6 +104,34 @@ menu resumes everything. On GNOME the icon needs the AppIndicator extension
 "VPN blinked for 8s" notification on recovery — not two popups; a freeze
 longer than 60s alerts once.
 
+### Run it past the terminal (autostart)
+
+`shuang daemon` runs in the foreground; closing the terminal sends SIGHUP —
+handled like Ctrl+C (everything frozen is resumed first). To keep it running
+independently of any terminal and start it at login, use a systemd **user**
+service:
+
+```ini
+# ~/.config/systemd/user/shuang.service
+[Unit]
+Description=shuang — per-app VPN kill switch daemon
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/shuang daemon
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user enable --now shuang   # start now + at every login
+systemctl --user restart shuang        # after changing settings
+journalctl --user -u shuang -f         # the log, instead of a terminal
+```
+
 ### One-shot check
 
 ```bash
