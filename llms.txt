@@ -71,6 +71,14 @@ timeout_secs = 5
 [timing]
 grace_secs = 20               # CLOCK_BOOTTIME-based: survives laptop sleep
 close_secs = 5
+freeze_on_event_first = false # paranoid: freeze on network event before re-check
+
+[watchdog]
+processes = ["v2ray"]         # freeze when the local proxy client dies
+
+[reputation]
+enabled = false               # freeze while the exit carries proxy/hosting flags
+fail_flags = ["proxy", "hosting"]
 
 [profiles.work]               # `shuang profile work` activates
 countries = ["NL", "DE"]

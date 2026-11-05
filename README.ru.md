@@ -209,12 +209,21 @@ country_services = ["https://api.country.is"]
 
 [timing]
 grace_secs = 20                     # сколько замороженное ждёт правильный IP
+freeze_on_event_first = false        # паранойя: заморозка при событии сети ДО перепроверки
 close_secs = 5                      # вежливая остановка перед принудительной
 
 [profiles.work]                     # `shuang profile work` активирует
 countries = ["NL", "DE"]
 
 trusted_networks = ["aa:bb:cc:dd:ee:ff"]   # MAC роутеров, где защита выключена (дом/офис)
+
+[watchdog]
+processes = ["v2ray", "clash"]  # freeze when the local proxy client dies (empty = off)
+
+[reputation]
+enabled = true         # freeze while the exit IP carries a proxy/hosting flag
+fail_flags = ["proxy", "hosting"]
+every_secs = 60
 
 [route_check]
 enabled = true          # freeze when the AI edge sees a foreign address (split routing)

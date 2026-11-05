@@ -31,6 +31,11 @@ pub struct Config {
     /// Split-routing check (`shuang leaks`): asks these services' own edge
     /// where the request came from.
     pub route_check: RouteCheckConfig,
+    /// Freeze when the local proxy client (v2ray/clash/…) dies: its death
+    /// may not move routes, so netlink stays silent while traffic leaks.
+    pub watchdog: WatchdogConfig,
+    /// Freeze when the exit IP's reputation degrades (proxy/hosting flags).
+    pub reputation: ReputationConfig,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
@@ -156,6 +161,10 @@ pub struct TimingConfig {
     pub grace_secs: u64,
     /// How long the polite stop is awaited before a forced kill.
     pub close_secs: u64,
+    /// Paranoid mode: a netlink/network event freezes FIRST, the IP check
+    /// runs after. Zero-leak window at the cost of half-second pauses on
+    /// harmless route changes.
+    pub freeze_on_event_first: bool,
 }
 
 impl Default for TimingConfig {
@@ -163,6 +172,39 @@ impl Default for TimingConfig {
         Self {
             grace_secs: 20,
             close_secs: 5,
+            freeze_on_event_first: false,
+        }
+    }
+}
+
+/// Proxy-client watchdog: patterns of the local VPN/proxy client processes.
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct WatchdogConfig {
+    /// Match patterns (same syntax as apps). When non-empty and no process
+    /// matches, the daemon freezes immediately.
+    pub processes: Vec<String>,
+}
+
+/// Exit-IP reputation guard.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields, default)]
+pub struct ReputationConfig {
+    /// When true, the daemon periodically asks ip-api about the exit and
+    /// freezes while it carries any of `fail_flags`.
+    pub enabled: bool,
+    /// Flags that fail the verdict: any of "proxy", "hosting", "tor".
+    pub fail_flags: Vec<String>,
+    /// How often (seconds) to re-check. Default 60.
+    pub every_secs: u64,
+}
+
+impl Default for ReputationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            fail_flags: vec!["proxy".to_string(), "hosting".to_string()],
+            every_secs: 60,
         }
     }
 }
@@ -227,6 +269,12 @@ pub struct SettingsOverride {
     pub min_agree: Option<usize>,
     /// false disables desktop notifications for `daemon`.
     pub notify: Option<bool>,
+    /// Paranoid mode: freeze on a network event before re-checking.
+    pub freeze_on_event_first: Option<bool>,
+    /// Proxy-client watchdog patterns (empty = off).
+    pub watchdog_processes: Option<Vec<String>>,
+    /// Exit-IP reputation guard.
+    pub reputation_enabled: Option<bool>,
 }
 
 /// Default config path: `$XDG_CONFIG_HOME/shuang/config.toml`, falling back to
@@ -267,6 +315,15 @@ impl Config {
         }
         if let Some(v) = state.settings.min_agree {
             self.ip_check.min_agree = v;
+        }
+        if let Some(v) = state.settings.freeze_on_event_first {
+            self.timing.freeze_on_event_first = v;
+        }
+        if let Some(v) = state.settings.watchdog_processes.clone() {
+            self.watchdog.processes = v;
+        }
+        if let Some(v) = state.settings.reputation_enabled {
+            self.reputation.enabled = v;
         }
         for mac in &state.trusted_networks {
             if !self.trusted_networks.contains(mac) {
