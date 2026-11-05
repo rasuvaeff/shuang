@@ -35,6 +35,7 @@ pub async fn run(
     no_tray: bool,
     no_notify: bool,
     no_panel: bool,
+    prebuilt_tray: Option<TrayHandle>,
 ) -> Result<u8> {
     let mut cfg = config::load(config_path, explicit)?;
     if cfg.ip_check.interval_secs == 0 {
@@ -70,7 +71,12 @@ pub async fn run(
     let mut guards: Vec<Guard> = cfg.apps.iter().map(|_| Guard::new(grace)).collect();
     let mut frozen = Frozen::recover(config_path);
 
-    let tray = TrayHandle::spawn(no_tray).await;
+    // macOS hands us a tray built on the main thread; other platforms spawn
+    // their own here.
+    let tray = match prebuilt_tray {
+        Some(handle) => handle,
+        None => TrayHandle::spawn(no_tray).await,
+    };
     let quit = tray.quit_flag();
     let mut notifier = Notifier::desktop(!no_notify);
     tray.status(tray::Status::Ok, "starting…").await;

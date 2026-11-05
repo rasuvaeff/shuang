@@ -44,6 +44,46 @@ async fn main() -> ExitCode {
     let path = config::resolve_path(&cli.config);
     let explicit = cli.config.is_some();
 
+    // macOS: the winit event loop must own the main thread. For the daemon
+    // with a tray we build the tray here, run the daemon on a worker, and
+    // block in the loop; every other command takes the regular async path.
+    #[cfg(target_os = "macos")]
+    if let cli::Command::Daemon {
+        no_tray: false,
+        no_notify,
+        no_panel,
+    } = &cli.command
+    {
+        if let Some(parts) = tray::macos_main::build() {
+            let tray_handle = tray::TrayHandle::from_proxy(
+                parts.proxy.clone(),
+                std::sync::Arc::clone(&parts.quit),
+            );
+            let path = path.clone();
+            let no_notify = *no_notify;
+            let no_panel = *no_panel;
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+                rt.block_on(async move {
+                    if let Err(err) = daemon::run(
+                        &path,
+                        explicit,
+                        false,
+                        no_notify,
+                        no_panel,
+                        Some(tray_handle),
+                    )
+                    .await
+                    {
+                        eprintln!("Error: {err:#}");
+                    }
+                });
+            });
+            tray::macos_main::run(parts);
+            return ExitCode::from(0);
+        }
+    }
+
     let code = match cli.command {
         cli::Command::Check { json } => check::run(&path, json, explicit).await,
         cli::Command::Allow { value } => allow::run(&path, &value),
@@ -60,7 +100,7 @@ async fn main() -> ExitCode {
             no_tray,
             no_notify,
             no_panel,
-        } => daemon::run(&path, explicit, no_tray, no_notify, no_panel).await,
+        } => daemon::run(&path, explicit, no_tray, no_notify, no_panel, None).await,
         cli::Command::Leaks => leaks::run(&path, explicit).await,
         cli::Command::Events { tail } => events_cmd(&path, tail),
         cli::Command::Profile { name } => profile::run(&path, &name),

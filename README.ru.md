@@ -223,7 +223,7 @@ trusted_networks = ["aa:bb:cc:dd:ee:ff"]   # MAC роутеров, где защ
 | Платформа | Заморозка | Трей | Примечания |
 |---|---|---|---|
 | Linux | ✅ | ✅ (KSNI) | netlink-мгновенная реакция, MAC шлюза, DNS из resolv.conf |
-| macOS | ✅ | 🚧 | только опрос |
+| macOS | ✅ | ✅ (tray-icon, main-thread loop) | события сети через опрос конфигурации |
 | Windows | ✅ (`NtSuspendProcess`) | 🚧 | проверяется в CI |
 | HarmonyOS PC | 📋 | — | возможен позже через `aarch64-unknown-linux-ohos` |
 
