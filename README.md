@@ -36,6 +36,17 @@ The download is verified against the `.sha256` published with the release; a
 mismatch aborts the install. Override the location with `INSTALL_DIR=…`, pin a
 version with `VERSION=vX.Y.Z`.
 
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/rasuvaeff/shuang/master/scripts/install.ps1 | iex
+```
+
+Installs into your user profile (no administrator rights) and adds itself to
+the user `PATH`. Prebuilt `x86_64-pc-windows-msvc` binaries are on the
+[Releases](https://github.com/rasuvaeff/shuang/releases) page; the installer
+verifies the published `.sha256` before installing.
+
 ### Cargo
 
 ```bash
