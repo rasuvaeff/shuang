@@ -33,7 +33,7 @@ pub struct Config {
     pub route_check: RouteCheckConfig,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[serde(deny_unknown_fields, default)]
 pub struct AppSpec {
     /// Human-readable name shown in events.
@@ -203,6 +203,8 @@ pub struct State {
     /// Panel-set overrides: applied on top of config.toml so the hand-written
     /// file is never rewritten.
     pub settings: SettingsOverride,
+    /// Protected apps added via the panel (merged with config apps).
+    pub apps: Vec<AppSpec>,
     /// Trusted gateway MACs added via the panel.
     pub trusted_networks: Vec<String>,
 }
@@ -261,6 +263,11 @@ impl Config {
         for mac in &state.trusted_networks {
             if !self.trusted_networks.contains(mac) {
                 self.trusted_networks.push(mac.clone());
+            }
+        }
+        for app in &state.apps {
+            if !self.apps.iter().any(|a| a.name == app.name) {
+                self.apps.push(app.clone());
             }
         }
     }
