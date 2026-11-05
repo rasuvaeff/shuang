@@ -59,5 +59,16 @@
 - macOS tray: the daemon runs on a worker thread while the winit event loop
   owns the main thread (tray-icon).
 
+## 0.3.0 — 2026-11-05
+
+- Daemon split-routing freeze (opt-in `[route_check] enabled`): re-asks the
+  AI services' own edge and freezes when the trace address matches neither
+  exit; `route-leak` events land in history.log.
+- Trusted networks on every platform: gateway MAC via /proc (Linux),
+  `route`/`arp` (macOS, Windows).
+- Panel: per-app allow countries when adding an app.
+- `shuang update` self-update (from 0.2.x), panel-managed protected apps,
+  macOS tray — shipped in 0.2.x, listed for completeness.
+
 ## Planned
 
