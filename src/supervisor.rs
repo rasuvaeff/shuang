@@ -138,7 +138,7 @@ impl Frozen {
 /// Ctrl+C + SIGTERM (where it exists) with one async receiver.
 pub struct Shutdown {
     #[cfg(unix)]
-    signals: [tokio::signal::unix::Signal; 2], // SIGINT, SIGTERM
+    signals: [tokio::signal::unix::Signal; 3], // SIGINT, SIGTERM, SIGHUP
     #[cfg(not(unix))]
     ctrl_c: std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send>>,
 }
@@ -150,8 +150,9 @@ impl Shutdown {
             use tokio::signal::unix::{SignalKind, signal};
             let int = signal(SignalKind::interrupt())?;
             let term = signal(SignalKind::terminate())?;
+            let hup = signal(SignalKind::hangup())?;
             Ok(Self {
-                signals: [int, term],
+                signals: [int, term, hup],
             })
         }
         #[cfg(not(unix))]
@@ -164,10 +165,11 @@ impl Shutdown {
     pub async fn recv(&mut self) {
         #[cfg(unix)]
         {
-            let [int, term] = &mut self.signals;
+            let [int, term, hup] = &mut self.signals;
             tokio::select! {
                 _ = int.recv() => {},
                 _ = term.recv() => {},
+                _ = hup.recv() => {},
             }
         }
         #[cfg(not(unix))]

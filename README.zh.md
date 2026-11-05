@@ -94,6 +94,33 @@ KDE/XFCE/Cinnamon 原生支持。
 **通知默认防打扰:**短暂的闪断在恢复时只产生一条安静的通知
 「VPN 闪断了 8 秒」,而不是两个弹窗;冻结超过 60 秒只提醒一次。
 
+### 脱离终端运行(开机自启)
+
+`shuang daemon` 在前台运行;关闭终端会发送 SIGHUP —— 其处理方式与
+Ctrl+C 相同(先恢复所有被冻结的进程)。要让守护进程独立于终端运行并在
+登录时自启,使用 systemd **用户级**服务:
+
+```ini
+# ~/.config/systemd/user/shuang.service
+[Unit]
+Description=shuang — per-app VPN kill switch daemon
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/shuang daemon
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user enable --now shuang   # 立即启动 + 每次登录自启
+systemctl --user restart shuang        # 修改设置后重启
+journalctl --user -u shuang -f         # 查看日志(代替终端)
+```
+
 ### 一次性检查
 
 ```bash

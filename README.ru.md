@@ -102,6 +102,34 @@ KDE/XFCE/Cinnamon — нативно.
 **Уведомления без шума:** короткое моргание даёт ОДНО тихое «VPN мигнул на
 8с» при восстановлении, а не два попа; заморозка дольше 60с алертит один раз.
 
+### Работа без терминала (автозапуск)
+
+`shuang daemon` работает в foreground; закрытие терминала шлёт SIGHUP — он
+обрабатывается как Ctrl+C (сначала размораживается всё замороженное). Чтобы
+демон жил независимо от терминалов и стартовал при входе в систему, нужен
+systemd **user**-сервис:
+
+```ini
+# ~/.config/systemd/user/shuang.service
+[Unit]
+Description=shuang — per-app VPN kill switch daemon
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/shuang daemon
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user enable --now shuang   # запустить сейчас + при каждом логине
+systemctl --user restart shuang        # после смены настроек
+journalctl --user -u shuang -f         # лог вместо терминала
+```
+
 ### Разовая проверка
 
 ```bash
