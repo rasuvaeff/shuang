@@ -368,7 +368,7 @@ impl TrayHandle {
             if proxy.is_none() {
                 eprintln!("shuang: no tray icon — running headless");
             }
-            return Self { inner: proxy, quit };
+            Self { inner: proxy, quit }
         }
 
         // macOS: `main.rs` builds the tray on the main thread and hands it to
