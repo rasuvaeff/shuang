@@ -445,20 +445,33 @@ async fn check_routes(
 ) -> Option<(String, std::time::Instant)> {
     let client = client?;
     let now = std::time::Instant::now();
+    let mut seen: Vec<String> = Vec::new();
     for service in services {
         let answer = crate::leaks::fetch_trace_public(client, service).await;
-        if let Some(ip) = answer.ip
-            && !crate::leaks::trace_matches(&ip, v4.as_deref(), v6.as_deref())
-        {
-            return Some((
-                format!(
-                    "{service} sees {ip} but the exits are {}/{} — split routing leak",
-                    v4.as_deref().unwrap_or("?"),
-                    v6.as_deref().unwrap_or("?")
-                ),
-                now,
-            ));
+        if let Some(ip) = answer.ip {
+            if !crate::leaks::trace_matches(&ip, v4.as_deref(), v6.as_deref()) {
+                return Some((
+                    format!(
+                        "{service} sees {ip} but the exits are {}/{} — split routing leak",
+                        v4.as_deref().unwrap_or("?"),
+                        v6.as_deref().unwrap_or("?")
+                    ),
+                    now,
+                ));
+            }
+            if !seen.contains(&ip) {
+                seen.push(ip);
+            }
         }
+    }
+    if seen.len() > 1 {
+        return Some((
+            format!(
+                "the AI edges disagree on the exit: {} — per-domain routing leak",
+                seen.join(" vs ")
+            ),
+            now,
+        ));
     }
     None
 }

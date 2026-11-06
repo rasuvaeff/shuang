@@ -24,7 +24,12 @@ use crate::{
 
 const OWNER: &str = "run";
 
-pub async fn run(config_path: &Path, command: Vec<String>, explicit: bool) -> Result<u8> {
+pub async fn run(
+    config_path: &Path,
+    command: Vec<String>,
+    explicit: bool,
+    tz_from_exit: bool,
+) -> Result<u8> {
     let mut cfg = config::load(config_path, explicit)?;
     let state = config::load_state(config_path);
     cfg.apply_overrides(&state);
@@ -60,10 +65,29 @@ pub async fn run(config_path: &Path, command: Vec<String>, explicit: bool) -> Re
     }
 
     let program = &command[0];
-    let mut child = Command::new(program)
-        .args(&command[1..])
+    let mut cmd = Command::new(program);
+    cmd.args(&command[1..])
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    if tz_from_exit {
+        // Claude Code reads the machine's time zone: give the child the exit
+        // country's zone so the TZ matches the IP the model side sees.
+        match verdict
+            .country
+            .as_deref()
+            .and_then(crate::tz::zone_for_country)
+        {
+            Some(zone) => {
+                eprintln!("shuang: child TZ set to {zone} (exit country)");
+                cmd.env("TZ", zone);
+            }
+            None => eprintln!(
+                "shuang: --tz-from-exit: no zone mapped for {:?} — leaving TZ as is",
+                verdict.country
+            ),
+        }
+    }
+    let mut child = cmd
         .spawn()
         .with_context(|| format!("cannot start {program}"))?;
     let child_pid = child

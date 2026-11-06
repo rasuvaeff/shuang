@@ -47,6 +47,11 @@ pub enum Command {
     /// Exit codes: 0 — command finished; 1 — error; 69 — IP not allowed at
     /// start; 75 — stopped because the allowed IP never came back.
     Run {
+        /// Set the child's TZ to the exit country's zone (Claude Code reads
+        /// the system time zone — a home-zone TZ behind a foreign exit is a
+        /// giveaway). Uses the startup exit's country.
+        #[arg(long)]
+        tz_from_exit: bool,
         /// The command to run, after `--`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<String>,
@@ -108,6 +113,8 @@ mod tests {
     #[test]
     fn run_requires_a_command() {
         let cli = Cli::try_parse_from(["shuang", "run", "--", "sleep", "1"]).expect("parses");
-        assert!(matches!(cli.command, Command::Run { ref command } if command == &["sleep", "1"]));
+        assert!(
+            matches!(cli.command, Command::Run { ref command, .. } if command == &["sleep", "1"])
+        );
     }
 }

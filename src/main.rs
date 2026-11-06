@@ -32,6 +32,7 @@ mod stats;
 mod supervisor;
 mod tray;
 mod trusted;
+mod tz;
 mod update;
 
 use std::path::Path;
@@ -92,7 +93,10 @@ async fn main() -> ExitCode {
             }
             Err(err) => Err(err),
         },
-        cli::Command::Run { command } => run::run(&path, command, explicit).await,
+        cli::Command::Run {
+            command,
+            tz_from_exit,
+        } => run::run(&path, command, explicit, tz_from_exit).await,
         cli::Command::Daemon {
             no_tray,
             no_notify,

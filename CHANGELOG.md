@@ -106,5 +106,16 @@
   classifies `vpn-down` vs `offline` in events.
 - Panel: probe toggle and stability seconds next to the existing guards.
 
+## Unreleased
+
+- Route check: the AI edges must agree with EACH OTHER, not only with the
+  quorum — per-domain routing (claude.ai via VPN, api.anthropic.com direct)
+  is now caught as a leak, in both `shuang leaks` and the daemon.
+- Doctor: CN-environment signals — a CN/HK/MO system timezone or a zh_CN
+  locale behind a foreign exit is reported (Claude Code reads the system
+  time zone).
+- `shuang run --tz-from-exit`: the child gets `TZ` of the exit country, so
+  the timezone Claude Code reports matches the IP it comes from.
+
 ## Planned
 

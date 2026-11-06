@@ -80,6 +80,27 @@ pub async fn check(config_path: &Path, explicit: bool) -> (Vec<(bool, String)>, 
         format!("local timezone: {}", tz.as_deref().unwrap_or("unknown")),
     ));
 
+    // 4b. CN-environment signals: Claude Code reads the system time zone;
+    // a CN zone or locale behind a foreign exit is a loud inconsistency.
+    let tz = tz.as_deref();
+    if tz.is_some_and(crate::tz::is_cn_timezone) {
+        checks.push((false, format!("system timezone {tz:?} is a CN/HK/MO zone")));
+        problems.push(format!(
+            "the system timezone is {tz:?} — Claude Code reports it next to your exit country; \
+             start the daemon/agent with TZ matching the exit (e.g. TZ=Europe/Amsterdam)"
+        ));
+    }
+    for var in ["LANG", "LC_ALL"] {
+        if let Some(value) = std::env::var(var)
+            .ok()
+            .filter(|v| crate::tz::is_cn_locale(v))
+        {
+            problems.push(format!(
+                "{var}={value:?} is a zh_CN locale — another CN-environment signal"
+            ));
+        }
+    }
+
     // 5. Trusted network state.
     match trusted::gateway_mac() {
         Some(mac) => {

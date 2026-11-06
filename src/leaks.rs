@@ -274,6 +274,24 @@ impl LeakReport {
             None => out.push_str("Gateway MAC: not detected\n"),
         }
 
+        // All AI edges must agree with EACH OTHER too: per-domain routing
+        // rules (claude.ai via VPN, api.anthropic.com direct) are a real
+        // proxy-client configuration.
+        let mut seen: Vec<&str> = Vec::new();
+        for route in &self.route_answers {
+            if let Some(ip) = &route.ip
+                && !seen.contains(&ip.as_str())
+            {
+                seen.push(ip);
+            }
+        }
+        if seen.len() > 1 {
+            problems.push(format!(
+                "the AI edges disagree on your exit: {} — per-domain routing leak",
+                seen.join(" vs ")
+            ));
+        }
+
         if let Some(rep) = &self.reputation {
             out.push_str(&format!("Exit IP reputation: {}\n", rep.render()));
             problems.extend(rep.problems());
@@ -676,6 +694,33 @@ mod tests {
         };
         assert!(clean.problems().is_empty());
         assert!(clean.render().starts_with("residential"));
+    }
+
+    #[test]
+    fn edges_disagreeing_with_each_other_is_a_problem() {
+        let mut r = report_with(vec![], Some("203.0.113.7"));
+        r.route_answers = vec![
+            RouteAnswer {
+                service: "claude.ai".into(),
+                ip: Some("203.0.113.7".into()),
+                country: None,
+                error: None,
+                latency_ms: None,
+            },
+            RouteAnswer {
+                service: "api.anthropic.com".into(),
+                ip: Some("198.51.100.9".into()), // also matches nothing
+                country: None,
+                error: None,
+                latency_ms: None,
+            },
+        ];
+        r.ipv6_exit = Some("198.51.100.9".into()); // each trace matches SOME exit
+        let (_, problems) = r.render();
+        assert!(
+            problems.iter().any(|p| p.contains("edges disagree")),
+            "{problems:?}"
+        );
     }
 
     #[test]
