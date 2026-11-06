@@ -58,7 +58,7 @@ cargo install --git https://github.com/rasuvaeff/shuang
 ### Kill switch for one command
 
 ```bash
-shuang run -- claude -p "fix the tests"
+shuang run --tz-from-exit -- claude -p "fix the tests"   # TZ matching the exit
 ```
 
 - IP not allowed **at start** → the command never runs, exit code **69**;
