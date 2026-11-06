@@ -80,9 +80,10 @@ pub async fn check(config_path: &Path, explicit: bool) -> (Vec<(bool, String)>, 
         format!("local timezone: {}", tz.as_deref().unwrap_or("unknown")),
     ));
 
-    // 4b. CN-environment signals: Claude Code reads the system time zone;
-    // a CN zone or locale behind a foreign exit is a loud inconsistency.
-    let tz = tz.as_deref();
+    // 4b. CN-environment signals: Claude Code reads the system time zone —
+    // both the TZ env var and /etc/localtime contribute on Linux.
+    let tz_env = std::env::var("TZ").ok();
+    let tz = tz_env.as_deref().or(tz.as_deref());
     if tz.is_some_and(crate::tz::is_cn_timezone) {
         checks.push((false, format!("system timezone {tz:?} is a CN/HK/MO zone")));
         problems.push(format!(
