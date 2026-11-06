@@ -97,7 +97,7 @@
 - All four are panel-editable (Settings card) and live in `state.toml`
   overrides; nothing requires editing config.toml.
 
-## Unreleased
+## 0.5.0 — 2026-11-06
 
 - Stability gate (`stability_secs`): after a freeze, the resume waits for
   the good verdict to hold — a flapping exit never resumes the trees.
