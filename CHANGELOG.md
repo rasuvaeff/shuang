@@ -117,5 +117,13 @@
 - `shuang run --tz-from-exit`: the child gets `TZ` of the exit country, so
   the timezone Claude Code reports matches the IP it comes from.
 
-## Planned
+## 0.5.1 — 2026-11-18
 
+- Fix: `shuang update` on Windows — zip 9 changed `ZipFile::name()` from
+  `&str` to `ZipResult<Cow<'_, str>>`, and the self-update extractor called
+  `.ends_with()` on the `Result` directly, failing the build (caught by the
+  Windows CI job of the cargo bump).
+- deps: cargo group update (zip 5 → 9 among them); CI: action-gh-release
+  3.0.3 → 3.0.4.
+
+## Planned
