@@ -195,7 +195,12 @@ fn extract_zip(archive: &[u8], into: &Path, binary_name: &str) -> Result<std::pa
     let out = into.join("shuang-new.exe");
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i)?;
-        if entry.name().ends_with(binary_name) {
+        // zip 9: `name()` returns a Result (the raw bytes may not be UTF-8)
+        if entry
+            .name()
+            .context("cannot read the zip entry name")?
+            .ends_with(binary_name)
+        {
             let mut buf = Vec::new();
             entry.read_to_end(&mut buf)?;
             std::fs::write(&out, buf)?;
