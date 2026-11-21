@@ -106,7 +106,7 @@
   classifies `vpn-down` vs `offline` in events.
 - Panel: probe toggle and stability seconds next to the existing guards.
 
-## Unreleased
+## 0.6.0 — 2026-11-21
 
 - Route check: the AI edges must agree with EACH OTHER, not only with the
   quorum — per-domain routing (claude.ai via VPN, api.anthropic.com direct)
