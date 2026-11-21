@@ -172,6 +172,11 @@ IPv6), and edits settings: check interval, grace/close timeouts, quorum,
 notifications, and "trust this network" (the gateway MAC). Panel edits are
 written to `state.toml` — `config.toml` is never rewritten. The panel binds
 127.0.0.1 only and every request must carry the per-run token.
+Panel edits take effect immediately. "Apply now" also reloads rules after a
+manual `config.toml` edit. A damaged `state.toml` freezes protected apps
+instead of silently resetting their rules.
+The daemon can start with no `[[apps]]` when the panel is enabled, so the
+first protected app can be added there.
 
 ### Diagnostics and history
 
@@ -208,13 +213,14 @@ timeout_secs = 5
 min_agree = 2                       # ≥ services must name the same IPv4
 ip_services = [...]                 # default: ipify, icanhazip, ident.me, checkip.amazonaws.com
 ipv6_services = [...]
+strict_ipv6 = false                 # require an IPv6 result when services are configured
 country_services = ["https://api.country.is"]
 
 [timing]
 grace_secs = 20                     # how long a frozen tree waits for the right IP
 freeze_on_event_first = false        # paranoid: freeze on a network event BEFORE re-checking
 stability_secs = 0                   # resume only after a good verdict HOLDS this long
-close_secs = 5                      # polite stop before a forced kill
+close_secs = 5                      # extra time to stay frozen before a forced kill
 
 [profiles.work]                     # `shuang profile work` activates
 countries = ["NL", "DE"]
@@ -235,30 +241,44 @@ fail_flags = ["proxy", "hosting"]
 every_secs = 60
 
 [route_check]
-enabled = true          # freeze when the AI edge sees a foreign address (split routing)
+enabled = true          # diagnostic request to an AI edge; split routing exposes its IP
+strict = false                      # deny when a route check cannot confirm the exit
 every_secs = 30
 ```
 
 **Per-app rules** are independent: one app can be frozen while another keeps
-running (the panel can set per-app countries when adding an app). **Trusted
+running (app countries add to the global allowlist; they do not narrow it). **Trusted
 networks** are recognized by the router's MAC — at home protection is off, in
 a café it is back on (Linux, macOS, Windows).
 **Profiles** switch allowlist sets in one command; the selection lives in
 `state.toml`, your commented config is never rewritten.
 
+Each app shows the daemon’s decision, a reason when blocked, and the time left before a forced stop. Changes show whether they are saved, being checked, or applied. To add an app, search running processes by name or path and preview the processes that the rule matches before saving.
+
 ## Reliability model
+
+The daemon acts on a transport failure during an in-flight check and verifies that Unix processes reached the stopped state. It rescans for late descendants and retries if a process continues while the denial is active. IPv6 disagreements always deny. Enable `strict_ipv6` or `route_check.strict` to require a response from the corresponding checks.
 
 - **Fail-closed:** an unknown verdict (no quorum, tie, timeouts) is never
   allowed. No exceptions.
-- **Instant reaction (Linux):** netlink route/address/link events trigger an
-  immediate re-check — no 5s window after a network change.
+- **Fast reaction (Linux):** netlink route/address/link events start a re-check
+  without waiting for the next interval. `freeze_on_event_first` suspends apps
+  before that re-check.
 - **Suspend-aware timing:** the grace timer uses `CLOCK_BOOTTIME`, so a
   laptop sleep does not eat the grace period.
-- **Clean exit:** Ctrl+C/SIGTERM resumes everything frozen.
-- **Crash recovery:** the frozen pid set is persisted to `state.toml`; the
-  next run resumes "frozen orphans" left by a killed shuang.
-- **IPv6 leak detection:** a direct IPv6 route the VPN does not tunnel fails
-  the verdict.
+- **Clean exit:** the daemon releases its own holds on Ctrl+C/SIGTERM.
+  `shuang run` stops the command and its frozen descendants.
+- **Crash recovery:** supervisors share a per-user `frozen.toml` journal
+  (`/tmp/shuang-freeze-<uid>/` on Unix and `%LOCALAPPDATA%/shuang/` on Windows).
+  The daemon releases an orphaned hold only under the same application policy
+  and after an allowed verdict holds for `stability_secs`. A live supervisor's
+  hold stays in force. Old records in `state.toml`, changed policies, and crashed
+  `shuang run` sessions require manual inspection.
+- **Live rules:** Apply now and panel edits interrupt in-progress checks.
+  With route checks enabled, an app allowed by its own rules also triggers a
+  route check.
+- **IPv6 leak detection:** IPv6 needs its own allowed address or subnet; the
+  country determined for IPv4 never allows an IPv6 exit.
 - **Quorum:** the country is cached per exit subnet (/24), so one flaky
   country-service answer does not re-freeze a confirmed exit.
 
@@ -296,6 +316,8 @@ Point `ip_services` at your own plain-text endpoint if you prefer.
   change (milliseconds with netlink): for a hard "not a single packet"
   guarantee, combine `shuang` with your VPN client's network-level kill
   switch — this tool complements it, not replaces it.
+- `route_check` contacts AI edges and can reveal its own exit IP on a split
+  route. It is disabled by default.
 - Processes running as root/system services are not touched.
 - `daemon` matches processes by name — an attacker process named like your
   app is out of scope for v0.1.

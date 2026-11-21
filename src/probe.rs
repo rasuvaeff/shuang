@@ -10,17 +10,17 @@ use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedSender;
 
-/// Spawn the probe loop. Sends `()` on every tick where ALL hosts failed.
+/// Spawn the probe loop. Reports changes in transport health.
 /// Best-effort: any error stops the loop silently (the IP checks remain).
 /// `app_proxy` (from ip_check.proxy) overrides the environment when set —
 /// it is THE path the protected apps use, per the panel field.
 pub fn spawn_with_proxy(
     cfg: &crate::config::ProbeConfig,
-    tx: UnboundedSender<()>,
+    tx: UnboundedSender<bool>,
     app_proxy: Option<String>,
-) {
+) -> Option<tokio::task::JoinHandle<()>> {
     if !cfg.enabled {
-        return;
+        return None;
     }
     let hosts = cfg.hosts.clone();
     let via = cfg.effective_via();
@@ -32,68 +32,74 @@ pub fn spawn_with_proxy(
             crate::config::ProbeVia::Auto => unreachable!("resolved at spawn"),
         }
     );
-    tokio::spawn(async move {
+    Some(tokio::spawn(async move {
+        let mut previous = None;
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            interval.tick().await;
             let down = match via {
                 crate::config::ProbeVia::Proxy => proxy_down(&hosts, app_proxy.as_deref()).await,
                 _ => transport_down(&hosts).await,
             };
-            if down && tx.send(()).is_err() {
-                return;
+            if Some(down) != previous {
+                if tx.send(down).is_err() {
+                    return;
+                }
+                previous = Some(down);
             }
         }
-    });
+    }))
 }
 
 /// The apps' path: an HTTP HEAD through the system proxy to each host.
 /// One healthy hop = transport alive.
 async fn proxy_down(hosts: &[String], explicit: Option<&str>) -> bool {
     let mut builder = reqwest::Client::builder().timeout(Duration::from_millis(1500));
-    if let Some(url) = explicit
-        && let Ok(p) = reqwest::Proxy::all(url)
-    {
-        builder = builder.proxy(p);
+    if let Some(url) = explicit {
+        let Ok(proxy) = reqwest::Proxy::all(url) else {
+            return true;
+        };
+        builder = builder.proxy(proxy);
     }
-    let Ok(client) = builder.build() else {
-        return false;
+    let Ok(client) = builder.redirect(reqwest::redirect::Policy::none()).build() else {
+        return true;
     };
+    let mut tasks = tokio::task::JoinSet::new();
     for host in hosts {
-        let addr = host.split(':').next().unwrap_or(host);
-        let url = format!("http://{addr}/");
-        if client.head(&url).send().await.is_ok() {
-            return false;
-        }
+        let client = client.clone();
+        let url = format!("http://{host}/");
+        tasks.spawn(async move {
+            client
+                .head(url)
+                .send()
+                .await
+                .is_ok_and(|r| r.status().is_success() || r.status().is_redirection())
+        });
     }
-    true
+    all_failed(tasks).await
 }
 
 /// All hosts unreachable over a direct TCP connect.
 async fn transport_down(hosts: &[String]) -> bool {
-    !hosts.is_empty()
-        && futures_all(hosts.iter().map(|host| async move {
-            let addr = tokio::net::TcpStream::connect(host)
-                .await
-                .map(|s: tokio::net::TcpStream| s)
-                .is_ok();
-            !addr
-        }))
-        .await
+    let mut tasks = tokio::task::JoinSet::new();
+    for host in hosts {
+        let host = host.clone();
+        tasks.spawn(async move {
+            tokio::time::timeout(
+                Duration::from_millis(1500),
+                tokio::net::TcpStream::connect(host),
+            )
+            .await
+            .is_ok_and(|result| result.is_ok())
+        });
+    }
+    all_failed(tasks).await
 }
 
-/// Join helper without pulling futures crate: runs all checks concurrently
-/// and returns true only when every predicate is true.
-async fn futures_all<F>(futs: impl Iterator<Item = F>) -> bool
-where
-    F: std::future::Future<Output = bool>,
-{
-    let mut results = Vec::new();
-    for fut in futs {
-        results.push(fut);
-    }
-    // Sequential is fine for 2-3 hosts at 1 s cadence; keeps the helper lazy.
-    for fut in results {
-        if !fut.await {
+async fn all_failed(mut tasks: tokio::task::JoinSet<bool>) -> bool {
+    while let Some(result) = tasks.join_next().await {
+        if matches!(result, Ok(true)) {
             return false;
         }
     }

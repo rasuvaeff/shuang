@@ -474,7 +474,12 @@ pub(crate) async fn fetch_trace_public(client: &reqwest::Client, service: &str) 
 async fn fetch_trace(client: &reqwest::Client, service: &str) -> RouteAnswer {
     let url = format!("https://{service}/cdn-cgi/trace");
     let started = std::time::Instant::now();
-    match client.get(&url).send().await {
+    match client
+        .get(&url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+    {
         Ok(resp) => match resp.text().await {
             Ok(body) => {
                 let latency_ms = Some(started.elapsed().as_millis());

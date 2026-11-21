@@ -157,6 +157,9 @@ MAC。出口国家不在 Claude 支持列表、以及边缘通过 IPv6 看到你
 通知,以及「信任当前网络」(网关 MAC)。面板的所有修改都写入
 `state.toml` —— `config.toml` 永远不会被改写。面板只监听 127.0.0.1,
 每个请求必须携带本次运行的令牌。
+面板修改会立即生效。「Apply now」按钮也可在手动编辑 `config.toml` 后重新加载规则。
+若 `state.toml` 损坏,守护进程会冻结受保护应用,不会静默清空规则。
+启用面板时可以不配置 `[[apps]]` 就启动守护进程,并在面板中添加第一个应用。
 
 ### 诊断与历史
 
@@ -193,13 +196,14 @@ timeout_secs = 5
 min_agree = 2                       # 至少 2 个服务给出相同 IPv4
 ip_services = [...]                 # 默认:ipify、icanhazip、ident.me、checkip.amazonaws.com
 ipv6_services = [...]
+strict_ipv6 = false                 # 配置 IPv6 服务时要求获得结果
 country_services = ["https://api.country.is"]
 
 [timing]
 grace_secs = 20                     # 冻结后等待正确 IP 的时间
 freeze_on_event_first = false        # 偏执模式:网络事件先冻结、再复查
 stability_secs = 0                   # 仅在判定稳定 N 秒后才恢复
-close_secs = 5                      # 强制杀死前的优雅停止时间
+close_secs = 5                      # 强制终止前额外保持冻结的时间
 
 [profiles.work]                     # `shuang profile work` 激活
 countries = ["NL", "DE"]
@@ -220,25 +224,36 @@ fail_flags = ["proxy", "hosting"]
 every_secs = 60
 
 [route_check]
-enabled = true          # freeze when the AI edge sees a foreign address (split routing)
+enabled = true          # 向 AI 边缘发送诊断请求;分流错误时会暴露出口 IP
+strict = false                      # 路由检查无法确认出口时阻止运行
 every_secs = 30
 ```
 
-**按应用的规则相互独立**:一个应用被冻结时另一个可以继续运行(在面板
-中添加应用时可设置仅限国家)。**可信网络**通过路由器 MAC 识别 —— 在家
+**按应用的规则相互独立**:一个应用被冻结时另一个可以继续运行(应用国家
+会加入全局白名单,不会缩小范围)。**可信网络**通过路由器 MAC 识别 —— 在家
 关闭保护,到咖啡馆自动恢复(Linux、macOS、Windows)。**配置档**一条命令切换白名单集合;选择保存在
 `state.toml` 里,你带注释的配置文件永远不会被改写。
 
+每个应用显示守护进程的判定、阻止原因及强制终止前的剩余时间。面板会显示规则是已保存、正在检查还是已生效。添加应用时，可以按名称或路径搜索进程，并在保存前预览规则匹配的进程。
+
 ## 可靠性模型
 
+传输中断可以打断正在进行的检查。守护进程在 Unix 上确认进程已停止，并再次扫描新出现的子进程。禁止运行期间，如果进程恢复，会重新冻结。IPv6 结果冲突时始终阻止运行。启用 `strict_ipv6` 或 `route_check.strict` 可要求相应检查返回确认结果。
+
 - **Fail-closed:**未知的判定(无仲裁、平票、超时)永远不会被允许。没有例外。
-- **即时响应(Linux):**netlink 路由/地址/链路事件触发立即复查 —— 网络变化
-  后不存在 5 秒窗口。
+- **快速响应(Linux):**netlink 路由/地址/链路事件无需等待下一个检查间隔便触发复查。
+  `freeze_on_event_first` 会在复查之前冻结应用。
 - **感知休眠的计时:**宽限计时器使用 `CLOCK_BOOTTIME`,合盖睡眠不会吃掉宽限期。
-- **干净退出:**Ctrl+C/SIGTERM 恢复所有被冻结的进程。
-- **崩溃恢复:**被冻结的 pid 集合持久化到 `state.toml`;下一次运行会恢复被
-  杀死的 shuang 留下的「冻结孤儿」。
-- **IPv6 泄漏检测:**VPN 未隧道的 IPv6 直连路由会使判定失败。
+- **干净退出:**收到 Ctrl+C/SIGTERM 时，守护进程会释放自己的冻结记录。
+  `shuang run` 会终止命令和已冻结的子进程。
+- **崩溃恢复:**同一用户的实例共享 `frozen.toml` 日志（Unix 上位于
+  `/tmp/shuang-freeze-<uid>/`，Windows 上位于 `%LOCALAPPDATA%/shuang/`）。
+  守护进程仅在应用规则相同且放行判定持续 `stability_secs` 后解除孤立的冻结。
+  运行中的实例仍然保有各自的冻结记录。旧版 `state.toml` 记录、规则已变更的
+  应用或崩溃的 `shuang run` 会话需要手动检查。
+- **实时应用规则:**“立即应用”按钮和面板编辑会中断正在进行的检查。
+  启用路由检查后，因自身规则而获准运行的应用也会触发检查。
+- **IPv6 泄漏检测:**IPv6 必须由自身地址或网段允许;IPv4 的国家结果不能允许 IPv6。
 - **仲裁:**国家按出口网段(/24)缓存,单个 country 服务的一次抖动不会
   重新冻结已确认的出口。
 
@@ -274,6 +289,8 @@ every_secs = 30
 - 被挂起的进程不发送任何数据,但挂起发生在网络变化之后(有 netlink 时是
   毫秒级):要获得「一个包都不漏」的硬保证,请把 `shuang` 与 VPN 客户端
   网络层的 kill switch 结合使用 —— 本工具是补充,不是替代。
+- `route_check` 会连接 AI 边缘;分流错误时,它自己的请求可能暴露出口 IP。
+  该功能默认关闭。
 - root / 系统服务的进程不会被触碰。
 - `daemon` 按名称匹配进程 —— 攻击者进程伪装成你的应用不在 v0.1 的威胁模型内。
 

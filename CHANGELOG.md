@@ -140,7 +140,37 @@
 - The panel shows an explicit "token expired — reopen from the tray" message
   in stale tabs instead of an eternal "loading".
 
-## Unreleased
+## 0.7.0 — 2026-11-21
+
+- Transport failure interrupts in-progress checks. Diagnostic requests no longer
+  delay the freeze after a known denial.
+- IPv6 disagreements deny the verdict. The panel distinguishes unavailable
+  checks from confirmed routes. Optional strict checks require a confirmed result.
+- On Unix, verify that suspended processes have stopped, rescan for children,
+  and stop processes again if they resume while a denial remains active.
+
+- The panel shows each app's status, the reason for a freeze, and time to forced
+  stop. It confirms when rules take effect and previews process matches before
+  saving a protected app.
+- State writes are locked and atomic; invalid state now fails closed.
+- The daemon applies panel changes immediately, with an Apply now button for
+  manual config edits. Probe settings are reloaded without restarting the daemon.
+- IPv6 no longer inherits the IPv4 country allowance; explicit IPv6 IP/subnet
+  rules are required. Invalid explicit proxies fail closed.
+- Supervisors share a freeze journal and record each PID before suspending it.
+  The last hold controls resumption. A replacement daemon can recover its
+  orphaned holds only under the same policy and after the stability window.
+- Processes stay frozen through both grace and close delays and are terminated
+  without being resumed if the exit is still denied.
+- The probe freezes apps before its diagnostic request. Route checks run if
+  any protected app allows the exit, including via its own allowlist.
+- Panel changes interrupt in-flight checks and reload the rules immediately.
+- `shuang check` now includes the active profile, matching the daemon's
+  verdict; `min_agree = 0` is rejected.
+- Panel profile deactivation now actually clears the active profile; status
+  refresh no longer erases the editable app list.
+- The daemon can start with an empty app list when the panel is available, so
+  the first protected app can be configured in the UI.
 
 - `app proxy` setting (panel + `[ip_check] proxy`): the proxy your protected
   apps actually use. When set, the IP checks AND the probe exercise exactly

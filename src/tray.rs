@@ -480,6 +480,7 @@ mod tests {
             ipv6: None,
             country: Some("NL".to_string()),
             quorum: true,
+            ..Verdict::default()
         };
         assert_eq!(summary(&verdict), "203.0.113.7 (NL)");
         let unknown = Verdict::default();
