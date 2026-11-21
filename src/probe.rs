@@ -12,10 +12,6 @@ use tokio::sync::mpsc::UnboundedSender;
 
 /// Spawn the probe loop. Sends `()` on every tick where ALL hosts failed.
 /// Best-effort: any error stops the loop silently (the IP checks remain).
-pub fn spawn(cfg: &crate::config::ProbeConfig, tx: UnboundedSender<()>) {
-    spawn_with_proxy(cfg, tx, None);
-}
-
 /// `app_proxy` (from ip_check.proxy) overrides the environment when set —
 /// it is THE path the protected apps use, per the panel field.
 pub fn spawn_with_proxy(
