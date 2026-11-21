@@ -142,6 +142,9 @@
 
 ## Unreleased
 
+- The panel shows each app's status, the reason for a freeze, and time to forced
+  stop. It confirms when rules take effect and previews process matches before
+  saving a protected app.
 - State writes are locked and atomic; invalid state now fails closed.
 - The daemon applies panel changes immediately, with an Apply now button for
   manual config edits. Probe settings are reloaded without restarting the daemon.

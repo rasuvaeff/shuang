@@ -251,6 +251,8 @@ a café it is back on (Linux, macOS, Windows).
 **Profiles** switch allowlist sets in one command; the selection lives in
 `state.toml`, your commented config is never rewritten.
 
+Each app shows the daemon’s decision, a reason when blocked, and the time left before a forced stop. Changes show whether they are saved, being checked, or applied. To add an app, search running processes by name or path and preview the processes that the rule matches before saving.
+
 ## Reliability model
 
 - **Fail-closed:** an unknown verdict (no quorum, tie, timeouts) is never

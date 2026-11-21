@@ -140,9 +140,15 @@ pub async fn run(
     let mut event_pending = false;
     let mut probe_down = false;
     let mut probe_episode: Option<String> = None;
-    let mut state_error = false;
+    let mut previous_error = None;
     loop {
-        match config::load(config_path, explicit) {
+        let revision = panel_shared.write().ok().map_or(0, |mut snapshot| {
+            snapshot.checking = true;
+            snapshot.requested_revision
+        });
+        let mut rules_error = None;
+        let loaded = config::load(config_path, explicit);
+        match loaded {
             Ok(next) => {
                 let marker = format!("{next:?}");
                 if marker != applied_config {
@@ -151,26 +157,17 @@ pub async fn run(
                     applied_state.clear();
                 }
             }
-            Err(err) => {
-                if !state_error {
-                    eprintln!("shuang: {err:#}; freezing protected apps");
-                }
-                state_error = true;
-            }
+            Err(err) => rules_error = Some(format!("{err:#}")),
         }
         match config::try_load_state(config_path) {
-            Ok(state) => {
-                if config::load(config_path, explicit).is_ok() {
-                    state_error = false;
-                }
+            Ok(state) if rules_error.is_none() => {
                 let marker = state_marker(&state)?;
                 if marker != applied_state {
                     let mut next = base_cfg.clone();
                     next.apply_overrides(&state);
                     if next.ip_check.interval_secs == 0 || next.ip_check.min_agree == 0 {
-                        eprintln!(
-                            "shuang: rejected settings: interval_secs and min_agree must be at least 1"
-                        );
+                        rules_error =
+                            Some("interval_secs and min_agree must be at least 1".to_string());
                     } else {
                         let mut old: HashMap<String, Guard> = guard_names
                             .drain(..)
@@ -241,13 +238,18 @@ pub async fn run(
                     }
                 }
             }
+            Ok(_) => {}
             Err(err) => {
-                if !state_error {
-                    eprintln!("shuang: {err:#}; freezing protected apps");
-                }
-                state_error = true;
+                rules_error.get_or_insert_with(|| format!("{err:#}"));
             }
         }
+        if rules_error != previous_error {
+            if let Some(error) = &rules_error {
+                eprintln!("shuang: {error}; freezing protected apps");
+            }
+            previous_error = rules_error.clone();
+        }
+        let state_error = rules_error.is_some();
         if state_error {
             let system = system_snapshot();
             for (idx, app) in cfg.apps.iter().enumerate() {
@@ -257,6 +259,11 @@ pub async fn run(
                 }
             }
             guards_rotate(&mut guards);
+            if let Ok(mut snapshot) = panel_shared.write() {
+                snapshot.evaluated_revision = Some(revision);
+                snapshot.rules_error = rules_error.clone();
+                snapshot.allowed = false;
+            }
         }
         // Master pause: the safety valve. No freezing, everything resumes.
         if cfg.protection_paused && !state_error {
@@ -266,6 +273,14 @@ pub async fn run(
             }
             for guard in guards.iter_mut() {
                 guard.good();
+            }
+            if let Ok(mut snapshot) = panel_shared.write() {
+                snapshot.applications = bypass_statuses(&cfg, "paused", &system_snapshot());
+                snapshot.apps = running_names(&snapshot.applications);
+                snapshot.frozen = frozen.len();
+                snapshot.evaluated_revision = Some(revision);
+                snapshot.rules_error = None;
+                snapshot.checking = false;
             }
             tray.status(tray::Status::Ok, "protection PAUSED").await;
             let Some((ev, down)) =
@@ -335,30 +350,15 @@ pub async fn run(
         let summary = tray::summary(&verdict);
         let system = System::new_all();
 
-        // Refresh the panel snapshot (best-effort; a poisoned lock skips a tick).
-        let global_ok = net::allowed(&verdict, &global_list) && !state_error;
-        let apps_running: Vec<String> = cfg
-            .apps
-            .iter()
-            .filter(|app| !procs::find_targets(&app.r#match, &system).is_empty())
-            .map(|app| app.name.clone())
-            .collect();
-        if let Ok(mut snap) = panel_shared.write() {
-            let deny = if state_error {
-                Some("configuration or state cannot be read".to_string())
-            } else {
-                net::deny_reason(&verdict, &global_list).map(|r| r.message())
-            };
-            *snap = panel::Snapshot {
-                ipv4: verdict.ipv4.map(|i| i.to_string()),
-                ipv6: verdict.ipv6.map(|i| i.to_string()),
-                country: verdict.country.clone(),
-                quorum: verdict.quorum,
-                allowed: global_ok,
-                frozen: frozen.len(),
-                apps: apps_running,
-                deny_reason: deny,
-            };
+        if let Ok(mut snapshot) = panel_shared.write() {
+            snapshot.ipv4 = verdict.ipv4.map(|ip| ip.to_string());
+            snapshot.ipv6 = verdict.ipv6.map(|ip| ip.to_string());
+            snapshot.country = verdict.country.clone();
+            snapshot.quorum = verdict.quorum;
+            snapshot.allowed = net::allowed(&verdict, &global_list) && !state_error;
+            snapshot.deny_reason = rules_error.clone().or_else(|| {
+                net::deny_reason(&verdict, &global_list).map(|reason| reason.message())
+            });
         }
 
         if quit.load(std::sync::atomic::Ordering::SeqCst) {
@@ -381,6 +381,14 @@ pub async fn run(
                     eprintln!("shuang: trusted network — resumed");
                     log_event(config_path, "resume", "trusted network");
                 }
+            }
+            if let Ok(mut snapshot) = panel_shared.write() {
+                snapshot.applications = bypass_statuses(&cfg, "trusted", &system_snapshot());
+                snapshot.apps = running_names(&snapshot.applications);
+                snapshot.frozen = frozen.len();
+                snapshot.evaluated_revision = Some(revision);
+                snapshot.rules_error = None;
+                snapshot.checking = false;
             }
             tray.status(tray::Status::Ok, &format!("{summary} — trusted network"))
                 .await;
@@ -510,6 +518,7 @@ pub async fn run(
         let mut any_frozen = false;
         let mut worst_detail = String::new();
         let mut ready_to_resume = Vec::new();
+        let mut applications = Vec::new();
 
         for (idx, app) in cfg.apps.iter().enumerate() {
             let list = &app_lists[idx];
@@ -517,10 +526,24 @@ pub async fn run(
             let target_pids: Vec<u32> = targets.iter().map(|(_, pid)| *pid).collect();
             let guard = &mut guards[idx];
 
+            let mut status = panel::AppStatus {
+                name: app.name.clone(),
+                state: if targets.is_empty() {
+                    "waiting"
+                } else {
+                    "running"
+                },
+                reason: None,
+                seconds_left: None,
+                matched: targets.len(),
+            };
             if net::allowed(&verdict, list) && !route_leak {
                 if guard.policy_stable(Duration::from_secs(cfg.timing.stability_secs)) {
                     ready_to_resume.push(idx);
+                } else if !targets.is_empty() {
+                    status.state = "stabilizing";
                 }
+                applications.push(status);
                 continue;
             }
 
@@ -547,8 +570,13 @@ pub async fn run(
                 worst_detail = format!("[{}] {message}", app.name);
             }
 
+            status.reason = Some(message.clone());
+            if !targets.is_empty() {
+                status.state = "frozen";
+            }
             match guard.bad() {
                 Stage::Freeze => {
+                    status.seconds_left = Some(grace.saturating_add(close_timeout).as_secs());
                     for pid in &target_pids {
                         let tree = procs::tree(*pid, &system);
                         frozen.freeze_tree(&tree, &app.name, &scopes[idx], &system)?;
@@ -570,6 +598,7 @@ pub async fn run(
                         .saturating_add(close_timeout)
                         .saturating_sub(elapsed)
                         .as_secs();
+                    status.seconds_left = Some(left);
                     notifier.still_frozen(&message);
                     eprintln!(
                         "shuang: [{}] frozen, {left}s left for the allowed IP",
@@ -586,11 +615,17 @@ pub async fn run(
                         let tree = procs::tree(*pid, &system);
                         frozen.freeze_tree(&tree, &app.name, &scopes[idx], &system)?;
                     }
-                    frozen.kill_owner(&app.name)?;
+                    if frozen.kill_owner(&app.name)? > 0 {
+                        status.state = "stopped";
+                    }
                     // The daemon keeps watching; the guard restarts on the next bad tick.
                     guard.good();
                 }
             }
+            if status.state == "waiting" {
+                status.seconds_left = None;
+            }
+            applications.push(status);
         }
 
         // Register all denied apps before releasing any overlapping claim.
@@ -603,6 +638,16 @@ pub async fn run(
             }
         }
 
+        #[cfg(unix)]
+        refresh_process_status(&mut applications, &cfg, system);
+        if let Ok(mut snapshot) = panel_shared.write() {
+            snapshot.apps = running_names(&applications);
+            snapshot.applications = applications;
+            snapshot.frozen = frozen.len();
+            snapshot.evaluated_revision = Some(revision);
+            snapshot.rules_error = rules_error;
+            snapshot.checking = false;
+        }
         if any_frozen {
             tray.status(tray::Status::Frozen, &worst_detail).await;
         } else {
@@ -619,6 +664,84 @@ pub async fn run(
         event_pending = ev;
         probe_down = down;
     }
+}
+
+#[cfg(unix)]
+fn refresh_process_status(
+    applications: &mut [panel::AppStatus],
+    cfg: &config::Config,
+    mut system: System,
+) {
+    use sysinfo::{Pid, ProcessStatus, ProcessesToUpdate};
+
+    let targets: Vec<Vec<Pid>> = cfg
+        .apps
+        .iter()
+        .map(|app| {
+            procs::find_targets(&app.r#match, &system)
+                .into_iter()
+                .map(|(_, pid)| Pid::from_u32(pid))
+                .collect()
+        })
+        .collect();
+    let mut pids: Vec<Pid> = targets.iter().flatten().copied().collect();
+    pids.sort_unstable();
+    pids.dedup();
+    system.refresh_processes(ProcessesToUpdate::Some(&pids), true);
+    for (app, targets) in applications.iter_mut().zip(targets) {
+        if targets.is_empty() || app.state == "stopped" {
+            continue;
+        }
+        let mut alive = 0;
+        let mut stopped = 0;
+        for pid in targets {
+            if let Some(process) = system.process(pid) {
+                match process.status() {
+                    ProcessStatus::Stop | ProcessStatus::Tracing => {
+                        stopped += 1;
+                        alive += 1;
+                    }
+                    ProcessStatus::Zombie | ProcessStatus::Dead => {}
+                    _ => alive += 1,
+                }
+            }
+        }
+        app.matched = alive;
+        app.state = match (app.state, alive, stopped) {
+            (_, 0, _) => "waiting",
+            ("frozen", alive, stopped) if stopped < alive => "denied",
+            ("running", _, stopped) if stopped > 0 => {
+                app.reason = Some("A matching process is still suspended".to_string());
+                "suspended"
+            }
+            (state, _, _) => state,
+        };
+    }
+}
+
+fn bypass_statuses(
+    cfg: &config::Config,
+    state: &'static str,
+    system: &System,
+) -> Vec<panel::AppStatus> {
+    cfg.apps
+        .iter()
+        .map(|app| panel::AppStatus {
+            name: app.name.clone(),
+            state,
+            reason: None,
+            seconds_left: None,
+            matched: procs::find_targets(&app.r#match, system).len(),
+        })
+        .collect()
+}
+
+fn running_names(applications: &[panel::AppStatus]) -> Vec<String> {
+    applications
+        .iter()
+        .filter(|app| app.matched > 0)
+        .map(|app| app.name.clone())
+        .collect()
 }
 
 /// Sleep until the next tick, a netlink event, or a shutdown signal —

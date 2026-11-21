@@ -23,6 +23,8 @@ curl -fsSL https://raw.githubusercontent.com/rasuvaeff/shuang/master/scripts/ins
   then force-killed if the verdict is still denied.
 - Panel edits and Apply now interrupt checks and reload config.toml. Route
   checks apply when any protected app's effective allowlist permits the exit.
+- The panel reports per-app decisions and countdowns, confirms rule application,
+  and previews process matches before saving a new app.
 - IPv6 must match an allowed IP/subnet; an IPv4 country result cannot allow IPv6.
 - State writes are locked and atomically replaced; malformed state fails closed.
 - Network checks contact configured IP/country services; optional route checks

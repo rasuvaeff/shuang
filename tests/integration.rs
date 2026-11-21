@@ -89,6 +89,10 @@ async fn panel_profile_change_interrupts_an_inflight_ip_check() {
     use std::sync::mpsc;
 
     let dir = tempfile::tempdir().unwrap();
+    let marker = format!(
+        "shuang-preview-{}",
+        dir.path().file_name().unwrap().to_string_lossy()
+    );
     // Hold the first IP request open until the test finishes. A daemon
     // that only listens for Apply while idle will wait the full timeout.
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -100,7 +104,18 @@ async fn panel_profile_change_interrupts_an_inflight_ip_check() {
         let mut request = [0; 1024];
         assert!(connection.read(&mut request).unwrap() > 0);
         started_tx.send(()).unwrap();
-        let _ = release_rx.recv_timeout(Duration::from_secs(20));
+        thread::spawn(move || {
+            let _ = release_rx.recv_timeout(Duration::from_secs(20));
+            drop(connection);
+        });
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            if stream.read(&mut request).unwrap_or(0) > 0 {
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n203.0.113.7",
+                );
+            }
+        }
     });
     let (b, _) = spawn("203.0.113.7");
     let config = dir.path().join("config.toml");
@@ -110,7 +125,7 @@ async fn panel_profile_change_interrupts_an_inflight_ip_check() {
             r#"
 [[apps]]
 name = "live-test"
-match = ["args:shuang-live-test"]
+match = ["args:{marker}"]
 
 [profiles.work]
 ips = ["203.0.113.7"]
@@ -138,7 +153,7 @@ grace_secs = 60
 
     let target = ManagedChild(
         Command::new("bash")
-            .args(["-c", "exec -a shuang-live-test sleep 30"])
+            .args(["-c", "exec -a \"$1\" sleep 30", "shuang-test", &marker])
             .spawn()
             .unwrap(),
     );
@@ -169,6 +184,44 @@ grace_secs = 60
         .1;
     let endpoint = base.join("/api/profile").unwrap();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let status_url = base.join("/api/status").unwrap();
+    let get_status = || async {
+        client
+            .get(status_url.clone())
+            .header("X-Shuang-Token", token.as_ref())
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap()
+    };
+    let initial = get_status().await;
+    assert_eq!(initial["rules_status"], "checking");
+
+    let preview = client
+        .post(base.join("/api/apps/preview").unwrap())
+        .header("X-Shuang-Token", token.as_ref())
+        .json(&serde_json::json!({"patterns": [format!("args:{marker}")] }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert!(
+        preview["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["pid"] == target.0.id())
+    );
+    assert!(preview["affected"].as_u64().unwrap() >= preview["total"].as_u64().unwrap());
+
     let connecting = std::time::Instant::now();
     let response = loop {
         let result = client
@@ -210,6 +263,32 @@ grace_secs = 60
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+    loop {
+        let status = get_status().await;
+        if status["rules_status"] == "applied" {
+            let application = &status["applications"][0];
+            assert_eq!(application["name"], "live-test");
+            assert_eq!(application["state"], "frozen");
+            assert!(application["seconds_left"].as_u64().unwrap() > 0);
+            assert!(application["reason"].as_str().is_some());
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "new rules never confirmed"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    std::fs::write(&config, "[invalid").unwrap();
+    let refused = client
+        .post(base.join("/api/apply").unwrap())
+        .header("X-Shuang-Token", token.as_ref())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), reqwest::StatusCode::BAD_REQUEST);
+    assert!(refused.text().await.unwrap().contains("invalid config"));
     drop(release_tx);
 }
 
