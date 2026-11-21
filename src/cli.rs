@@ -92,6 +92,9 @@ pub enum Command {
         #[arg(long)]
         tail: usize,
     },
+    /// Open the daemon's panel in a native application window (webview;
+    /// falls back to the browser). Reads the panel URL from state.toml.
+    Panel,
     /// Self-update: download the latest release binary for this platform,
     /// verify the published .sha256, and replace this executable.
     Update,

@@ -130,6 +130,12 @@ impl Notifier {
         }
     }
 
+    /// A one-off critical alert, independent of the freeze state machine
+    /// (used for home-IP leaks and similar "drop everything" events).
+    pub fn alert(&mut self, msg: &str) {
+        self.send("shuang: CRITICAL", msg, Urgency::Normal);
+    }
+
     fn send(&mut self, summary: &str, body: &str, urgency: Urgency) {
         if self.enabled {
             (self.sink)(summary, body, urgency);

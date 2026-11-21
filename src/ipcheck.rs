@@ -81,10 +81,14 @@ struct CountryReply {
 }
 
 pub async fn check(cfg: &IpCheckConfig) -> Verdict {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(cfg.timeout_secs.max(1)))
-        .build()
+    let mut builder =
+        reqwest::Client::builder().timeout(Duration::from_secs(cfg.timeout_secs.max(1)));
+    if let Some(url) = &cfg.proxy
+        && let Ok(p) = reqwest::Proxy::all(url)
     {
+        builder = builder.proxy(p);
+    }
+    let client = match builder.build() {
         Ok(client) => client,
         Err(_) => return Verdict::default(),
     };

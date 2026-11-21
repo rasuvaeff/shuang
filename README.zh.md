@@ -52,7 +52,7 @@ cargo install --git https://github.com/rasuvaeff/shuang
 ### 单条命令的 kill switch
 
 ```bash
-shuang run --tz-from-exit -- claude -p "fix the tests"   # TZ 与出口国一致
+shuang panel                         # 原生窗口中的设置面板
 ```
 
 - **启动时** IP 不允许 → 命令根本不运行,退出码 **69**;

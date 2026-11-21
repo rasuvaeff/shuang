@@ -32,6 +32,8 @@ name = "shuang"
 path = "src/main.rs"
 
 [dependencies]
+tao = "0.31"
+wry = "0.51"
 anyhow = "1.0"
 flate2 = "1"
 sha2 = "0.11"
@@ -46,12 +48,15 @@ sysinfo = "0.38"
 tokio = { version = "1.45", features = ["macros", "net", "process", "rt-multi-thread", "signal", "time"] }
 toml = "1.1"
 
+
 [target.'cfg(unix)'.dependencies]
 ksni = { version = "0.3", features = ["blocking"] }
 nix = { version = "0.31", features = ["signal", "time"] }
 notify-rust = "4"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+glib = "0.20"
 netlink-packet-route = "0.34"
 netlink-sys = "0.9"
 

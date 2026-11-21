@@ -126,4 +126,27 @@
 - deps: cargo group update (zip 5 → 9 among them); CI: action-gh-release
   3.0.3 → 3.0.4.
 
+## Unreleased
+
+- Native GUI window: `shuang panel` (and the tray's "Open panel") opens the
+  panel in a real application window — wry webview on Linux (GTK), tao+wry on
+  Windows/macOS; browser fallback when no webview is present.
+- **Home-IP leak detector**: when the exit changes to a residential address
+  (not a VPN/proxy/hosting IP) after a VPN one, shuang raises a critical
+  `home-ip-leak` event and a desktop alert — a dead tunnel leaking the real
+  address is now named for what it is.
+- Probe events debounced: one event per episode instead of one per second
+  (a flapping day wrote 125k history lines).
+- The panel shows an explicit "token expired — reopen from the tray" message
+  in stale tabs instead of an eternal "loading".
+
+## Unreleased
+
+- `app proxy` setting (panel + `[ip_check] proxy`): the proxy your protected
+  apps actually use. When set, the IP checks AND the probe exercise exactly
+  that path — per-user setups (custom ports, no env) are first-class.
+- Probe path selector (auto/proxy/direct) in the panel.
+- GUI window exits cleanly on close (no lingering processes); RU panel
+  translations.
+
 ## Planned

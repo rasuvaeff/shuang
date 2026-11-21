@@ -16,6 +16,7 @@ mod doctor;
 mod events;
 mod fix;
 mod guard;
+mod gui;
 mod ipcheck;
 mod leaks;
 mod mono;
@@ -106,6 +107,18 @@ async fn main() -> ExitCode {
         cli::Command::Events { tail } => events_cmd(&path, tail),
         cli::Command::Profile { name } => profile::run(&path, &name),
         cli::Command::Stats { tail } => stats::run(&path, tail),
+        cli::Command::Panel => {
+            let state = config::load_state(&path);
+            match state.panel_url {
+                Some(url) => match gui::run(&url) {
+                    Ok(()) => Ok(0),
+                    Err(err) => Err(err),
+                },
+                None => Err(anyhow::anyhow!(
+                    "no panel URL in state.toml — is the daemon running?"
+                )),
+            }
+        }
         cli::Command::Update => update::run().await,
         cli::Command::Doctor => doctor::run(&path, explicit).await,
         cli::Command::Fix { kind } => match fix::Kind::parse(&kind) {

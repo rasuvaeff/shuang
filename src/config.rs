@@ -36,6 +36,10 @@ pub struct Config {
     pub watchdog: WatchdogConfig,
     /// Freeze when the exit IP's reputation degrades (proxy/hosting flags).
     pub reputation: ReputationConfig,
+    /// Master pause: no freezing at all (the "something is wrong" valve).
+    pub protection_paused: bool,
+    /// Which path the probe exercises: auto | proxy | direct.
+    pub probe_via: Option<String>,
     /// Fast transport probe: a 1-second TCP ping freezing the instant the
     /// transport dies; also classifies vpn-down vs offline.
     pub probe: ProbeConfig,
@@ -126,6 +130,10 @@ pub struct IpCheckConfig {
     pub interval_secs: u64,
     /// Per-request timeout in seconds.
     pub timeout_secs: u64,
+    /// The proxy your protected apps actually use (e.g. "http://127.0.0.1:10809").
+    /// When set, the IP checks AND the probe go through exactly this path;
+    /// empty = follow the http(s)_proxy environment (or direct when unset).
+    pub proxy: Option<String>,
 }
 
 impl Default for IpCheckConfig {
@@ -152,6 +160,7 @@ impl Default for IpCheckConfig {
             min_agree: 2,
             interval_secs: 5,
             timeout_secs: 5,
+            proxy: None,
         }
     }
 }
@@ -212,7 +221,12 @@ pub struct ReputationConfig {
 pub struct ProbeConfig {
     /// Enable the 1-second transport probe.
     pub enabled: bool,
-    /// `host:port` pairs probed by a direct TCP connect (no proxy). All
+    /// Which path to probe — the one your apps actually use:
+    /// "auto" (default): via http(s)_proxy when set, raw TCP otherwise;
+    /// "proxy": only through the proxy (TUN flaps must not freeze apps
+    /// that never use TUN); "direct": only raw TCP.
+    pub via: ProbeVia,
+    /// `host:port` pairs probed when exercising the raw-TCP path. All
     /// failing = transport down = instant freeze.
     pub hosts: Vec<String>,
     /// When the transport is down, ask one direct (proxy-less) IP check to
@@ -220,10 +234,43 @@ pub struct ProbeConfig {
     pub distinguish_offline: bool,
 }
 
+/// The transport path the probe exercises.
+#[derive(Debug, Default, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProbeVia {
+    /// http(s)_proxy when set, raw TCP otherwise.
+    #[default]
+    Auto,
+    /// Only through the proxy — protects apps that use the proxy env.
+    Proxy,
+    /// Only raw TCP — the system-tunnel path.
+    Direct,
+}
+
+impl ProbeConfig {
+    /// Effective mode after "auto" resolution.
+    pub fn effective_via(&self) -> ProbeVia {
+        match self.via {
+            ProbeVia::Auto => {
+                if std::env::var_os("http_proxy").is_some()
+                    || std::env::var_os("https_proxy").is_some()
+                    || std::env::var_os("all_proxy").is_some()
+                {
+                    ProbeVia::Proxy
+                } else {
+                    ProbeVia::Direct
+                }
+            }
+            other => other,
+        }
+    }
+}
+
 impl Default for ProbeConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            via: ProbeVia::Auto,
             hosts: vec!["1.1.1.1:80".to_string(), "9.9.9.9:80".to_string()],
             distinguish_offline: true,
         }
@@ -288,6 +335,8 @@ pub struct State {
     pub apps: Vec<AppSpec>,
     /// Trusted gateway MACs added via the panel.
     pub trusted_networks: Vec<String>,
+    /// The running daemon's panel URL (with token), for `shuang panel`.
+    pub panel_url: Option<String>,
 }
 
 /// Per-setting overrides written by the panel; `None` = keep the config value.
@@ -310,6 +359,14 @@ pub struct SettingsOverride {
     pub stability_secs: Option<u64>,
     /// Fast transport probe.
     pub probe_enabled: Option<bool>,
+    /// Master switch: pause ALL freezing (a safety valve when something
+    /// misbehaves); everything frozen resumes immediately.
+    pub protection_paused: Option<bool>,
+    /// Which path the probe exercises: auto | proxy | direct.
+    pub probe_via: Option<String>,
+    /// The proxy the protected apps use ("http://127.0.0.1:10809"); empty =
+    /// follow the environment.
+    pub app_proxy: Option<String>,
 }
 
 /// Default config path: `$XDG_CONFIG_HOME/shuang/config.toml`, falling back to
@@ -365,6 +422,23 @@ impl Config {
         }
         if let Some(v) = state.settings.probe_enabled {
             self.probe.enabled = v;
+        }
+        if let Some(v) = state.settings.protection_paused {
+            self.protection_paused = v;
+        }
+        if let Some(url) = state.settings.app_proxy.as_deref() {
+            self.ip_check.proxy = if url.trim().is_empty() {
+                None
+            } else {
+                Some(url.trim().to_string())
+            };
+        }
+        if let Some(via) = state.settings.probe_via.as_deref() {
+            self.probe.via = match via {
+                "proxy" => ProbeVia::Proxy,
+                "direct" => ProbeVia::Direct,
+                _ => ProbeVia::Auto,
+            };
         }
         for mac in &state.trusted_networks {
             if !self.trusted_networks.contains(mac) {

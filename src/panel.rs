@@ -71,7 +71,7 @@ pub async fn spawn(shared: Shared, config_path: PathBuf, no_panel: bool) -> Opti
         .with_state(AppState {
             shared,
             token: token.clone(),
-            config_path,
+            config_path: config_path.clone(),
         });
 
     let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
@@ -96,6 +96,12 @@ pub async fn spawn(shared: Shared, config_path: PathBuf, no_panel: bool) -> Opti
     });
 
     let url = format!("http://127.0.0.1:{port}/?token={token}");
+    // Persist for `shuang panel` (the GUI window process) and the tray.
+    {
+        let mut state = config::load_state(&config_path.clone());
+        state.panel_url = Some(url.clone());
+        let _ = config::save_state(&config_path, &state);
+    }
     Some(Panel { url, quit })
 }
 
@@ -292,6 +298,9 @@ async fn get_settings(
         "reputation_enabled": cfg.reputation.enabled,
         "stability_secs": cfg.timing.stability_secs,
         "probe_enabled": cfg.probe.enabled,
+        "probe_via": format!("{:?}", cfg.probe.via).to_lowercase(),
+        "app_proxy": cfg.ip_check.proxy,
+        "protection_paused": cfg.protection_paused,
         "trusted_networks": state.trusted_networks,
         "gateway_mac": crate::trusted::gateway_mac(),
     }))
@@ -310,6 +319,9 @@ struct SettingsBody {
     reputation_enabled: Option<bool>,
     stability_secs: Option<u64>,
     probe_enabled: Option<bool>,
+    protection_paused: Option<bool>,
+    probe_via: Option<String>,
+    app_proxy: Option<String>,
 }
 
 async fn post_settings(
@@ -367,6 +379,15 @@ async fn post_settings(
     if parsed.probe_enabled.is_some() {
         s.probe_enabled = parsed.probe_enabled;
     }
+    if parsed.protection_paused.is_some() {
+        s.protection_paused = parsed.protection_paused;
+    }
+    if let Some(via) = parsed.probe_via.as_deref()
+        && matches!(via, "auto" | "proxy" | "direct")
+    {
+        s.probe_via = Some(via.to_string());
+    }
+    s.app_proxy = parsed.app_proxy;
     match config::save_state(&app.config_path, &state) {
         Ok(()) => (StatusCode::OK, "saved — restart the daemon to apply").into_response(),
         Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
@@ -657,6 +678,9 @@ const PAGE_HTML: &str = r#"<!doctype html>
 </head>
 <body>
 <h1>shuang <span>霜</span></h1>
+<div style="position:absolute;top:1rem;right:1rem">
+  <button onclick="setLang('ru')">RU</button>
+  <button onclick="setLang('en')">EN</button></div>
 <div class="card" id="status">loading…</div>
 <div class="card"><strong>Protected apps</strong><ul id="apps"></ul>
   <form id="addapp"><input type="text" id="appname" placeholder="name (e.g. claude-code)">
@@ -674,7 +698,7 @@ const PAGE_HTML: &str = r#"<!doctype html>
   <select id="profile"></select>
   <div class="muted">Profiles come from [profiles.name] in config.toml.</div></div>
 <div class="card"><strong>Settings</strong>
-  <div>interval <input type="number" id="s_interval" style="width:5rem"> s ·
+  <div title="How often the external IP is re-checked">interval <input type="number" id="s_interval" style="width:5rem"> s ·
        grace <input type="number" id="s_grace" style="width:4rem"> s ·
        close <input type="number" id="s_close" style="width:4rem"> s ·
        quorum <input type="number" id="s_min_agree" style="width:3rem"></div>
@@ -685,6 +709,16 @@ const PAGE_HTML: &str = r#"<!doctype html>
     <input type="text" id="s_watchdog" style="width:100%"></div>
   <div style="margin-top:.5rem"><label><input type="checkbox" id="s_probe"> fast probe (1s transport check)</label>
     · stability gate <input type="number" id="s_stability" style="width:4rem"> s</div>
+  <div style="margin-top:.3rem">probe path: <select id="s_probe_via">
+    <option value="auto">auto (proxy when set)</option>
+    <option value="proxy">proxy only (the apps' path)</option>
+    <option value="direct">direct TCP only</option></select></div>
+  <div style="margin-top:.3rem">app proxy — how your apps actually connect (e.g. http://127.0.0.1:10809; empty = environment):
+    <input type="text" id="s_app_proxy" style="width:100%"></div>
+
+  <details style="margin-top:.8rem"><summary style="cursor:pointer;color:#7aa2f7">What do all these settings mean?</summary>
+  <div class="muted" style="margin-top:.4rem" id="helpbox"></div></details>
+  <div style="margin-top:.5rem"><label><input type="checkbox" id="s_paused"> ⏸ PROTECTION PAUSED (no freezing at all)</label></div>
   <div style="margin-top:.6rem"><button onclick="saveSettings()">Save settings</button>
        <button onclick="trustNetwork()">Trust this network</button>
        <span class="muted" id="trusted_macs"></span></div></div>
@@ -698,9 +732,104 @@ const PAGE_HTML: &str = r#"<!doctype html>
 <div class="card"><strong>Recent events</strong><pre id="events"></pre></div>
 <script>
 const token = new URLSearchParams(location.search).get('token');
+const I18N = {
+  ru: {
+    'Protected apps': 'Защищаемые приложения',
+    'Settings': 'Настройки',
+    'Leak report': 'Утечки',
+    'Diagnostics': 'Диагностика',
+    'VPN health (7 days)': 'Здоровье VPN (7 дней)',
+    'Recent events': 'События',
+    'name (e.g. claude-code)': 'имя (напр. claude-code)',
+    'match pattern (e.g. claude)': 'паттерн (напр. claude)',
+    'only from countries (e.g. NL,DE) — optional': 'только из стран (напр. NL,DE) — необязательно',
+    'Add': 'Добавить',
+    'Add from running processes': 'Добавить из запущенных процессов',
+    'Panel-added apps live in state.toml; [[apps]] in config.toml still applies. Restart the daemon to apply changes.':
+      'Приложения из панели живут в state.toml; [[apps]] из config.toml тоже действует. Изменения — после перезапуска демона.',
+    'none running': 'ничего не запущено',
+    'none': 'нет',
+    's ·': 'с ·',
+    'desktop notifications': 'уведомления на рабочем столе',
+    'paranoid (freeze on network event first)': 'паранойя (заморозка при событии сети до проверки)',
+    'reputation guard': 'репутация выхода',
+    'fast probe (1s transport check)': 'быстрый зонд (проверка транспорта 1с)',
+    'PROTECTION PAUSED (no freezing at all)': 'ЗАЩИТА НА ПАУЗЕ (никаких заморозок)',
+    'watchdog processes (comma-separated, e.g. v2ray, clash — empty = off)':
+      'процессы прокси-клиента (через запятую: v2ray, clash — пусто = выкл)',
+    'interval': 'интервал',
+    'grace': 'grace',
+    'close': 'close',
+    'quorum': 'кворум',
+    'stability gate': 'гейт стабильности',
+    'Save settings': 'Сохранить настройки',
+    'Trust this network': 'Доверять этой сети',
+    'Run checks': 'Проверить',
+    'Run doctor': 'Диагностика',
+    'Refresh': 'Обновить',
+    'saved — restart the daemon to apply': 'сохранено — перезапустите демона',
+    'IP, subnet (1.2.3.0/24), or country (NL)': 'IP, подсеть (1.2.3.0/24) или страна (NL)',
+    'Allowed': 'Разрешено',
+    'no events yet': 'событий пока нет',
+    'running…': 'выполняется…',
+    'Токен панели истёк — демон перезапускался.<br>Откройте панель заново из меню трея (Open panel).':
+      'Токен панели истёк — демон перезапускался.<br>Откройте панель заново из меню трея (Open panel).',
+  },
+  en: {}
+};
+let LANG = localStorage.getItem('shuang-lang') ||
+  ((navigator.language || '').toLowerCase().startsWith('ru') ? 'ru' : 'en');
+function t(s) { return (I18N[LANG] && I18N[LANG][s]) || s; }
+function setLang(l) { LANG = l; localStorage.setItem('shuang-lang', l); applyI18n(); }
+const HELP = {
+  en: `<b>interval</b> — how often the external IP is re-checked (seconds). 5 is a good default.<br>
+<b>grace / close</b> — when the IP goes bad the app is frozen; grace is how long we wait for the good IP to return before stopping the app (close = polite-stop timeout).<br>
+<b>quorum</b> — how many IP services must agree on the address. Fewer agreeing = "unknown", and unknown is never allowed.<br>
+<b>desktop notifications</b> — popups about freezes/recoveries.<br>
+<b>paranoid</b> — freeze FIRST on any network change, verify after. Zero leak window, tiny pauses.<br>
+<b>reputation guard</b> — freeze while the exit IP is flagged as proxy/datacenter.<br>
+<b>fast probe</b> — a 1-second health ping; freezes the instant the transport dies (instead of waiting for IP-check timeouts).<br>
+<b>probe path</b> — which route the probe tests: "proxy only" = the exact route your apps use (recommended when they go via a local proxy).<br>
+<b>app proxy</b> — the proxy address your apps use; all checks then see exactly what they see.<br>
+<b>stability gate</b> — after a freeze, wait N seconds of stable good verdict before unfreezing (stops IP flapping from reaching the app).<br>
+<b>watchdog</b> — names of your proxy-client processes; if that process dies, everything freezes instantly.<br>
+<b>PROTECTION PAUSED</b> — the big red button: no freezing at all, everything resumes. Use when something misbehaves.`,
+  ru: `<b>интервал</b> — как часто перепроверяется внешний IP (в секундах). 5 — нормальное значение по умолчанию.<br>
+<b>grace / close</b> — при плохом IP приложение замораживается; grace — сколько секунд ждать возвращения правильного IP перед остановкой (close — таймаут «вежливого» закрытия).<br>
+<b>кворум</b> — сколько IP-сервисов должны сойться на адресе. Меньше — «неизвестно», а неизвестное никогда не разрешается.<br>
+<b>уведомления</b> — всплывающие сообщения о заморозках и восстановлении.<br>
+<b>паранойя</b> — при любом изменении сети сначала заморозить, потом проверять. Нулевое окно утечки, ценой микро-пауз.<br>
+<b>репутация</b> — заморозка, пока выходной IP помечен как прокси/датацентр.<br>
+<b>быстрый зонд</b> — проверка здоровья раз в секунду; мгновенная заморозка при смерти транспорта (не ждём таймауты IP-проверок).<br>
+<b>путь зонда</b> — какой маршрут проверять: «proxy only» = ровно тот путь, которым ходят ваши приложения (рекомендуется при локальном прокси).<br>
+<b>app proxy</b> — адрес прокси, которым пользуются ваши приложения; все проверки будут видеть то же, что видят они.<br>
+<b>гейт стабильности</b> — после заморозки ждать N секунд стабильного «хорошо» перед разморозкой (скачки IP не доходят до приложения).<br>
+<b>watchdog</b> — имена процессов вашего прокси-клиента; если процесс умрёт — мгновенная заморозка всего.<br>
+<b>ПАУЗА ЗАЩИТЫ</b> — большая красная кнопка: никаких заморозок, всё разморожено. Когда «что-то странно — сначала выключи, потом разбирайся».`
+};
+function applyI18n() {
+  const hb = document.getElementById('helpbox');
+  if (hb) hb.innerHTML = HELP[LANG] || HELP.en;
+  document.querySelectorAll('strong').forEach(e => { if (!e.dataset.orig) e.dataset.orig = e.textContent; e.textContent = t(e.dataset.orig); });
+  document.querySelectorAll('input[type=text], input:not([type])').forEach(e => { if (e.placeholder && !e.dataset.p) e.dataset.p = e.placeholder; if (e.dataset.p) e.placeholder = t(e.dataset.p); });
+  document.querySelectorAll('button').forEach(e => { if (!e.dataset.orig) e.dataset.orig = e.textContent; const v = t(e.dataset.orig); if (v !== e.dataset.orig || e.dataset.orig !== e.textContent) e.textContent = v; });
+  document.querySelectorAll('label').forEach(e => {
+    const cb = e.querySelector('input'); const txt = e.textContent.replace(/^\s+|\s+$/g,'');
+    if (!e.dataset.orig) e.dataset.orig = txt.replace(/^[^ ]* /,'').trim() || txt;
+    if (cb) { e.textContent = ''; e.appendChild(cb); e.appendChild(document.createTextNode(' ' + t(e.dataset.orig))); }
+  });
+}
+applyI18n();
 const H = { 'X-Shuang-Token': token };
 async function refresh() {
   try {
+    const probe = await fetch('/api/status?token=' + token, { headers: H });
+    if (probe.status === 403) {
+      document.body.innerHTML = '<div style="font:15px system-ui;padding:3rem;color:#e6e6e6;background:#14161a;height:100%;box-sizing:border-box">' +
+        'Токен панели истёк — демон перезапускался.<br>Откройте панель заново из меню трея (Open panel).</div>';
+      clearInterval(refreshTimer);
+      return;
+    }
     const s = await (await fetch('/api/status', { headers: H })).json();
     const st = document.getElementById('status');
     const cls = s.allowed ? 'ok' : 'bad';
@@ -772,6 +901,9 @@ async function loadSettings() {
   document.getElementById('s_reputation').checked = s.reputation_enabled;
   document.getElementById('s_watchdog').value = (s.watchdog_processes || []).join(', ');
   document.getElementById('s_probe').checked = s.probe_enabled;
+  document.getElementById('s_paused').checked = s.protection_paused;
+  document.getElementById('s_probe_via').value = s.probe_via || 'auto';
+  document.getElementById('s_app_proxy').value = s.app_proxy || '';
   document.getElementById('s_stability').value = s.stability_secs;
   document.getElementById('trusted_macs').textContent =
     s.trusted_networks.length ? 'trusted: ' + s.trusted_networks.join(', ') : '';
@@ -788,6 +920,9 @@ async function saveSettings() {
     watchdog_processes: document.getElementById('s_watchdog').value.split(',')
       .map(s => s.trim()).filter(s => s.length > 0),
     probe_enabled: document.getElementById('s_probe').checked,
+    protection_paused: document.getElementById('s_paused').checked,
+    probe_via: document.getElementById('s_probe_via').value,
+    app_proxy: document.getElementById('s_app_proxy').value.trim(),
     stability_secs: +document.getElementById('s_stability').value,
   };
   const r = await fetch('/api/settings', { method: 'POST', headers: H,
@@ -839,7 +974,7 @@ async function trustNetwork() {
   alert(await r.text());
   loadSettings();
 }
-refresh(); loadSettings(); loadApps(); setInterval(refresh, 3000);
+const refreshTimer = setInterval(refresh, 3000); refresh(); loadSettings(); loadApps();
 </script>
 </body>
 </html>"#;
