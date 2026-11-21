@@ -88,7 +88,7 @@ pub async fn run(
     let mut scopes = recovery_scopes(config_path, &cfg, &app_lists)?;
     // Split-routing check: "" while OK, Some(reason) while leaking.
     let mut route_client = route_client_for(&cfg.ip_check);
-    let mut route_state: Option<(String, std::time::Instant)> = None; // (reason, checked_at)
+    let mut route_state: Option<RouteResult> = None;
     let mut reputation_state: Option<(String, std::time::Instant)> = None;
     let mut last_exit: Option<String> = None;
 
@@ -139,9 +139,44 @@ pub async fn run(
 
     let mut event_pending = false;
     let mut probe_down = false;
-    let mut probe_episode: Option<String> = None;
+    let mut probe_transition = false;
     let mut previous_error = None;
-    loop {
+    let mut notify_enabled = !no_notify && state.settings.notify.unwrap_or(true);
+    'watch: loop {
+        // Consume transport, link and shutdown events even when an HTTP check is in flight.
+        macro_rules! while_current {
+            ($operation:expr) => {{
+                let operation = $operation;
+                tokio::pin!(operation);
+                let result = loop {
+                    tokio::select! {
+                        biased;
+                        signal = wait_signal(&mut net_rx, &mut probe_rx, &mut shutdown, &apply) => break Err(signal),
+                        value = &mut operation => break Ok(value),
+                        _ = tokio::time::sleep(Duration::from_secs(1)), if !frozen.is_empty() => {
+                            freeze_apps(&mut frozen, &cfg, &scopes, |idx| guards[idx].is_frozen())?;
+                        }
+                    }
+                };
+                match result {
+                    Ok(value) => value,
+                    Err(Some((event, down))) => {
+                        event_pending |= event;
+                        if let Some(down) = down {
+                            // Remember a failure even if the next probe recovers before this loop wakes.
+                            probe_transition |= down;
+                            probe_down = down;
+                        }
+                        continue 'watch;
+                    }
+                    Err(None) => {
+                        frozen.resume_all()?;
+                        return Ok(0);
+                    }
+                }
+            }};
+        }
+
         let revision = panel_shared.write().ok().map_or(0, |mut snapshot| {
             snapshot.checking = true;
             snapshot.requested_revision
@@ -204,14 +239,20 @@ pub async fn run(
                             .collect();
                         interval = Duration::from_secs(next.ip_check.interval_secs);
                         scopes = recovery_scopes(config_path, &next, &app_lists)?;
-                        notifier =
-                            Notifier::desktop(!no_notify && state.settings.notify.unwrap_or(true));
+                        notify_enabled = !no_notify && state.settings.notify.unwrap_or(true);
+                        notifier = Notifier::desktop(notify_enabled);
                         route_client = route_client_for(&next.ip_check);
                         route_state = None;
+                        if !next.probe.enabled {
+                            probe_down = false;
+                            probe_transition = false;
+                        }
                         reputation_state = None;
                         if let Some(handle) = probe_handle.take() {
                             handle.abort();
+                            let _ = handle.await;
                         }
+                        while probe_rx.try_recv().is_ok() {}
                         probe_handle = probe::spawn_with_proxy(
                             &next.probe,
                             probe_tx.clone(),
@@ -220,16 +261,8 @@ pub async fn run(
                         cfg = next;
                         applied_state = marker;
                         if !cfg.protection_paused && !trusted::is_trusted(&cfg.trusted_networks) {
-                            let system = system_snapshot();
-                            for (idx, (app, guard)) in
-                                cfg.apps.iter().zip(guards.iter_mut()).enumerate()
-                            {
-                                for (_, pid) in procs::find_targets(&app.r#match, &system) {
-                                    let tree = procs::tree(pid, &system);
-                                    frozen.freeze_tree(&tree, &app.name, &scopes[idx], &system)?;
-                                }
-                                let _ = guard.bad();
-                            }
+                            freeze_apps(&mut frozen, &cfg, &scopes, |_| true)?;
+                            guards_rotate(&mut guards);
                         }
                         for removed in old.keys() {
                             frozen.resume_owner(removed, None)?;
@@ -251,13 +284,7 @@ pub async fn run(
         }
         let state_error = rules_error.is_some();
         if state_error {
-            let system = system_snapshot();
-            for (idx, app) in cfg.apps.iter().enumerate() {
-                for (_, pid) in procs::find_targets(&app.r#match, &system) {
-                    let tree = procs::tree(pid, &system);
-                    frozen.freeze_tree(&tree, &app.name, &scopes[idx], &system)?;
-                }
-            }
+            freeze_apps(&mut frozen, &cfg, &scopes, |_| true)?;
             guards_rotate(&mut guards);
             if let Ok(mut snapshot) = panel_shared.write() {
                 snapshot.evaluated_revision = Some(revision);
@@ -291,40 +318,28 @@ pub async fn run(
                 return Ok(0);
             };
             event_pending = ev;
-            probe_down = down;
+            if let Some(down) = down {
+                probe_transition = down;
+                probe_down = down;
+            }
             continue;
         }
 
         // Probe-down always freezes (a dead transport leaks nothing good);
         // paranoid mode additionally freezes on plain network events.
-        if probe_down && !trusted::is_trusted(&cfg.trusted_networks) {
-            let system = system_snapshot();
-            for (idx, app) in cfg.apps.iter().enumerate() {
-                for (_, pid) in procs::find_targets(&app.r#match, &system) {
-                    let tree = procs::tree(pid, &system);
-                    frozen.freeze_tree(&tree, &app.name, &scopes[idx], &system)?;
-                }
-            }
+        if (probe_down || probe_transition) && !trusted::is_trusted(&cfg.trusted_networks) {
+            freeze_apps(&mut frozen, &cfg, &scopes, |_| true)?;
             guards_rotate(&mut guards);
-            probe_down = false;
-            let Some(state) = until_apply(
-                &apply,
-                probe::classify(&cfg.ip_check.ip_services, cfg.ip_check.timeout_secs),
-            )
-            .await
-            else {
-                continue;
-            };
-            let reason = state
-                .map(|s| s.message().to_string())
-                .unwrap_or_else(|| "transport probe failed".to_string());
-            eprintln!("shuang: {reason}");
-            // Log ONCE per distinct episode: the raw probe fires every second
-            // (2026-11: one flapping day wrote 125k history lines).
-            let kind = state.map(|s| s.event_kind()).unwrap_or("probe-down");
-            if probe_episode.as_deref() != Some(kind) {
-                probe_episode = Some(kind.to_string());
-                log_event(config_path, kind, &reason);
+            if probe_transition {
+                probe_transition = false;
+                log_event(config_path, "probe-down", "transport probe failed");
+                let ip = cfg.ip_check.clone();
+                let path = config_path.to_path_buf();
+                tokio::spawn(async move {
+                    if let Some(state) = probe::classify(&ip.ip_services, ip.timeout_secs).await {
+                        log_event(&path, state.event_kind(), state.message());
+                    }
+                });
             }
         }
         // Paranoid mode: freeze FIRST on a network event, verify after.
@@ -333,19 +348,14 @@ pub async fn run(
             && !trusted::is_trusted(&cfg.trusted_networks)
         {
             eprintln!("shuang: network change — frozen preemptively");
-            let system = system_snapshot();
-            for (idx, app) in cfg.apps.iter().enumerate() {
-                for (_, pid) in procs::find_targets(&app.r#match, &system) {
-                    let tree = procs::tree(pid, &system);
-                    frozen.freeze_tree(&tree, &app.name, &scopes[idx], &system)?;
-                }
-            }
+            freeze_apps(&mut frozen, &cfg, &scopes, |_| true)?;
             guards_rotate(&mut guards);
         }
+        if event_pending {
+            route_state = None;
+        }
         event_pending = false;
-        let Some(mut verdict) = until_apply(&apply, ipcheck::check(&cfg.ip_check)).await else {
-            continue;
-        };
+        let mut verdict = while_current!(ipcheck::check(&cfg.ip_check));
         countries.fill(&mut verdict);
         let summary = tray::summary(&verdict);
         let system = System::new_all();
@@ -353,6 +363,7 @@ pub async fn run(
         if let Ok(mut snapshot) = panel_shared.write() {
             snapshot.ipv4 = verdict.ipv4.map(|ip| ip.to_string());
             snapshot.ipv6 = verdict.ipv6.map(|ip| ip.to_string());
+            snapshot.ipv6_status = verdict.ipv6_state.label();
             snapshot.country = verdict.country.clone();
             snapshot.quorum = verdict.quorum;
             snapshot.allowed = net::allowed(&verdict, &global_list) && !state_error;
@@ -400,56 +411,62 @@ pub async fn run(
                 return Ok(0);
             };
             event_pending = ev;
-            probe_down = down;
+            if let Some(down) = down {
+                probe_transition = down;
+                probe_down = down;
+            }
             continue;
         }
 
-        // Periodic AI-edge check (opt-in): a trace answer that matches none of
-        // the known exits means the VPN split-routes the AI traffic — freeze.
-        if cfg.route_check.enabled
-            && !state_error
-            && app_lists.iter().any(|list| net::allowed(&verdict, list))
-        {
-            let due = route_state
-                .as_ref()
-                .is_none_or(|(_, at)| at.elapsed().as_secs() >= cfg.route_check.every_secs.max(1));
-            if due {
-                let Some(result) = until_apply(
-                    &apply,
-                    check_routes(
-                        route_client.as_ref(),
-                        &cfg.route_check.services,
-                        verdict.ipv4.map(|i| i.to_string()),
-                        verdict.ipv6.map(|i| i.to_string()),
-                    ),
-                )
-                .await
-                else {
-                    continue;
-                };
-                route_state = result;
-                if let Some((reason, _)) = &route_state {
-                    eprintln!("shuang: {reason}");
-                    log_event(config_path, "route-leak", reason);
-                }
-            }
-        }
-        // Proxy-client watchdog: the client's death may not move routes.
         let watchdog_dead = !cfg.watchdog.processes.is_empty()
             && procs::find_targets(&cfg.watchdog.processes, &system).is_empty();
+        let transport_denied = state_error || watchdog_dead || probe_down;
+        // Act on a known denial before any optional requests.
+        freeze_apps(&mut frozen, &cfg, &scopes, |idx| {
+            transport_denied || !net::allowed(&verdict, &app_lists[idx])
+        })?;
 
+        if cfg.route_check.enabled
+            && !transport_denied
+            && app_lists.iter().any(|list| net::allowed(&verdict, list))
+        {
+            let exits = (verdict.ipv4, verdict.ipv6);
+            if route_state.as_ref().is_none_or(|result| {
+                result.exits != exits
+                    || matches!(result.status, RouteStatus::Unavailable(_))
+                    || result.checked_at.elapsed().as_secs() >= cfg.route_check.every_secs.max(1)
+            }) {
+                let status = while_current!(check_routes(
+                    route_client.as_ref(),
+                    &cfg.route_check.services,
+                    exits,
+                ));
+                route_state = Some(RouteResult {
+                    exits,
+                    status,
+                    checked_at: std::time::Instant::now(),
+                });
+            }
+        }
+        let route_reason = route_state
+            .as_ref()
+            .and_then(|result| match &result.status {
+                RouteStatus::Mismatch(reason) => Some(reason.as_str()),
+                RouteStatus::Unavailable(reason) if cfg.route_check.strict => Some(reason.as_str()),
+                _ => None,
+            });
+        if route_reason.is_some() {
+            freeze_apps(&mut frozen, &cfg, &scopes, |_| true)?;
+        }
         // Exit-reputation guard (opt-in, periodic).
-        if cfg.reputation.enabled {
+        if cfg.reputation.enabled && !transport_denied && route_reason.is_none() {
             let due = reputation_state
                 .as_ref()
                 .is_none_or(|(_, at)| at.elapsed().as_secs() >= cfg.reputation.every_secs.max(1));
             if due {
                 reputation_state = if let (Some(client), Some(ip)) = (&route_client, verdict.ipv4) {
-                    let Some(rep) =
-                        until_apply(&apply, leaks::fetch_reputation(client, &ip.to_string())).await
-                    else {
-                        continue;
-                    };
+                    let address = ip.to_string();
+                    let rep = while_current!(leaks::fetch_reputation(client, &address));
                     let hit = cfg
                         .reputation
                         .fail_flags
@@ -487,33 +504,40 @@ pub async fn run(
                     "exit-change",
                     &format!("{ip} (was {})", last_exit.as_deref().unwrap_or_default()),
                 );
-                // A residential address (not a VPN/proxy/hosting IP) right
-                // after a VPN exit is the user's HOME IP leaking through a
-                // dead tunnel — the single worst outcome this tool exists to
-                // catch. Name it loudly.
-                if let Some(client) = &route_client {
-                    let Some(rep) = until_apply(&apply, leaks::fetch_reputation(client, &ip)).await
-                    else {
-                        continue;
-                    };
-                    if rep.proxy == Some(false) && rep.hosting == Some(false) {
-                        let msg = format!(
-                            "HOME IP LEAK: traffic now exits via {ip} \
-                             (residential, proxy=false) — your real address is exposed"
-                        );
-                        eprintln!("shuang: {msg}");
-                        log_event(config_path, "home-ip-leak", &msg);
-                        notifier.alert(&msg);
-                    }
+                if let Some(client) = route_client.clone() {
+                    let ip = ip.clone();
+                    let path = config_path.to_path_buf();
+                    let notify = notify_enabled;
+                    tokio::spawn(async move {
+                        let rep = leaks::fetch_reputation(&client, &ip).await;
+                        if rep.proxy == Some(false) && rep.hosting == Some(false) {
+                            let msg = format!(
+                                "exit {ip} is reported as residential by the reputation service"
+                            );
+                            log_event(&path, "home-ip-leak", &msg);
+                            Notifier::desktop(notify).alert(&msg);
+                        }
+                    });
                 }
             }
             last_exit = Some(ip);
         }
 
-        if until_apply(&apply, std::future::ready(())).await.is_none() {
-            continue;
+        if let Ok(mut snapshot) = panel_shared.write() {
+            snapshot.route_status = if !cfg.route_check.enabled {
+                "disabled"
+            } else if let Some(result) = &route_state {
+                match result.status {
+                    RouteStatus::Confirmed => "confirmed",
+                    RouteStatus::Mismatch(_) => "mismatch",
+                    RouteStatus::Unavailable(_) => "unavailable",
+                }
+            } else {
+                "pending"
+            };
         }
-        let route_leak = route_state.is_some() || watchdog_dead || reputation_bad || state_error;
+        while_current!(std::future::ready(()));
+        let denied = transport_denied || route_reason.is_some() || reputation_bad;
 
         let mut any_frozen = false;
         let mut worst_detail = String::new();
@@ -537,7 +561,7 @@ pub async fn run(
                 seconds_left: None,
                 matched: targets.len(),
             };
-            if net::allowed(&verdict, list) && !route_leak {
+            if net::allowed(&verdict, list) && !denied {
                 if guard.policy_stable(Duration::from_secs(cfg.timing.stability_secs)) {
                     ready_to_resume.push(idx);
                 } else if !targets.is_empty() {
@@ -556,10 +580,10 @@ pub async fn run(
                 )
             } else if let Some((reason, _)) = &reputation_state {
                 reason.clone()
-            } else if let Some((reason, _)) = &route_state {
-                reason.clone()
-            } else if route_leak {
-                "split routing leak".to_string()
+            } else if probe_down {
+                "transport probe failed".to_string()
+            } else if let Some(reason) = route_reason {
+                reason.to_string()
             } else {
                 net::deny_reason(&verdict, list)
                     .map(|r| r.message())
@@ -577,9 +601,8 @@ pub async fn run(
             match guard.bad() {
                 Stage::Freeze => {
                     status.seconds_left = Some(grace.saturating_add(close_timeout).as_secs());
-                    for pid in &target_pids {
-                        let tree = procs::tree(*pid, &system);
-                        frozen.freeze_tree(&tree, &app.name, &scopes[idx], &system)?;
+                    if !frozen.freeze_roots(&target_pids, &app.name, &scopes[idx], &system)? {
+                        status.state = "denied";
                     }
                     eprintln!(
                         "shuang: [{}] {message} — froze {} process(es)",
@@ -590,9 +613,8 @@ pub async fn run(
                     notifier.freeze_started(&message);
                 }
                 Stage::Frozen(elapsed) => {
-                    for pid in &target_pids {
-                        let tree = procs::tree(*pid, &system);
-                        frozen.freeze_tree(&tree, &app.name, &scopes[idx], &system)?;
+                    if !frozen.freeze_roots(&target_pids, &app.name, &scopes[idx], &system)? {
+                        status.state = "denied";
                     }
                     let left = grace
                         .saturating_add(close_timeout)
@@ -611,9 +633,8 @@ pub async fn run(
                         app.name
                     );
                     log_event(config_path, "close", &app.name);
-                    for pid in &target_pids {
-                        let tree = procs::tree(*pid, &system);
-                        frozen.freeze_tree(&tree, &app.name, &scopes[idx], &system)?;
+                    if !frozen.freeze_roots(&target_pids, &app.name, &scopes[idx], &system)? {
+                        status.state = "denied";
                     }
                     if frozen.kill_owner(&app.name)? > 0 {
                         status.state = "stopped";
@@ -654,15 +675,23 @@ pub async fn run(
             tray.status(tray::Status::Ok, &summary).await;
         }
 
+        let wait = if any_frozen {
+            interval.min(Duration::from_secs(1))
+        } else {
+            interval
+        };
         let Some((ev, down)) =
-            wait_tick(interval, &mut net_rx, &mut probe_rx, &mut shutdown, &apply).await
+            wait_tick(wait, &mut net_rx, &mut probe_rx, &mut shutdown, &apply).await
         else {
             eprintln!("shuang: shutting down — releasing frozen processes");
             frozen.resume_all()?;
             return Ok(0);
         };
         event_pending = ev;
-        probe_down = down;
+        if let Some(down) = down {
+            probe_transition = down;
+            probe_down = down;
+        }
     }
 }
 
@@ -749,35 +778,57 @@ fn running_names(applications: &[panel::AppStatus]) -> Vec<String> {
 async fn wait_tick(
     interval: Duration,
     net_rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>,
-    probe_rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>,
+    probe_rx: &mut tokio::sync::mpsc::UnboundedReceiver<bool>,
     shutdown: &mut Shutdown,
     apply: &tokio::sync::Notify,
-) -> Option<(bool, bool)> {
-    // (net_event, probe_down)
-    let mut event = false;
-    let mut down = false;
-    // Guards: a recv() on a CLOSED channel is instantly ready forever —
-    // without the guard a disabled probe would fire `down` on every select
-    // (the "any claude launch freezes" bug, 2026-11-21).
+) -> Option<(bool, Option<bool>)> {
     tokio::select! {
-        _ = tokio::time::sleep(interval) => {},
-        _ = apply.notified() => {},
-        _ = net_rx.recv(), if !net_rx.is_closed() => { event = true; },
-        _ = probe_rx.recv(), if !probe_rx.is_closed() => { down = true; },
-        _ = shutdown.recv() => return None,
+        signal = wait_signal(net_rx, probe_rx, shutdown, apply) => signal,
+        _ = tokio::time::sleep(interval) => Some((false, None)),
     }
-    Some((event, down))
 }
 
-async fn until_apply<T>(
+async fn wait_signal(
+    net_rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>,
+    probe_rx: &mut tokio::sync::mpsc::UnboundedReceiver<bool>,
+    shutdown: &mut Shutdown,
     apply: &tokio::sync::Notify,
-    operation: impl std::future::Future<Output = T>,
-) -> Option<T> {
+) -> Option<(bool, Option<bool>)> {
     tokio::select! {
         biased;
-        _ = apply.notified() => None,
-        result = operation => Some(result),
+        _ = shutdown.recv() => None,
+        down = probe_rx.recv(), if !probe_rx.is_closed() || !probe_rx.is_empty() => Some((false, down)),
+        _ = apply.notified() => Some((false, None)),
+        result = net_rx.recv(), if !net_rx.is_closed() || !net_rx.is_empty() => {
+            // Coalesce the burst generated by a single link change.
+            for _ in 0..64 {
+                if net_rx.try_recv().is_err() { break; }
+            }
+            Some((result.is_some(), None))
+        }
     }
+}
+
+fn freeze_apps(
+    frozen: &mut Frozen,
+    cfg: &config::Config,
+    scopes: &[String],
+    denied: impl Fn(usize) -> bool,
+) -> Result<()> {
+    if !cfg.apps.iter().enumerate().any(|(idx, _)| denied(idx)) {
+        return Ok(());
+    }
+    let system = system_snapshot();
+    for (idx, app) in cfg.apps.iter().enumerate().filter(|(idx, _)| denied(*idx)) {
+        let roots = procs::find_targets(&app.r#match, &system);
+        frozen.freeze_roots(
+            &roots.iter().map(|(_, pid)| *pid).collect::<Vec<_>>(),
+            &app.name,
+            &scopes[idx],
+            &system,
+        )?;
+    }
+    Ok(())
 }
 
 fn recovery_scopes(
@@ -808,44 +859,56 @@ fn recovery_scopes(
         .collect()
 }
 
-/// Ask every service's edge; None = all traces match the known exits.
+type Exits = (Option<std::net::IpAddr>, Option<std::net::IpAddr>);
+
+struct RouteResult {
+    exits: Exits,
+    status: RouteStatus,
+    checked_at: std::time::Instant,
+}
+
+enum RouteStatus {
+    Confirmed,
+    Mismatch(String),
+    Unavailable(String),
+}
+
 async fn check_routes(
     client: Option<&reqwest::Client>,
     services: &[String],
-    v4: Option<String>,
-    v6: Option<String>,
-) -> Option<(String, std::time::Instant)> {
-    let client = client?;
-    let now = std::time::Instant::now();
-    let mut seen: Vec<String> = Vec::new();
+    exits: Exits,
+) -> RouteStatus {
+    let Some(client) = client.filter(|_| !services.is_empty()) else {
+        return RouteStatus::Unavailable("no route checks are configured or available".to_string());
+    };
+    let mut tasks = tokio::task::JoinSet::new();
     for service in services {
-        let answer = crate::leaks::fetch_trace_public(client, service).await;
-        if let Some(ip) = answer.ip {
-            if !crate::leaks::trace_matches(&ip, v4.as_deref(), v6.as_deref()) {
-                return Some((
-                    format!(
-                        "{service} sees {ip} but the exits are {}/{} — split routing leak",
-                        v4.as_deref().unwrap_or("?"),
-                        v6.as_deref().unwrap_or("?")
-                    ),
-                    now,
+        let service = service.clone();
+        let client = client.clone();
+        tasks.spawn(async move { leaks::fetch_trace_public(&client, &service).await });
+    }
+    let v4 = exits.0.map(|ip| ip.to_string());
+    let v6 = exits.1.map(|ip| ip.to_string());
+    let mut missing = 0;
+    while let Some(answer) = tasks.join_next().await {
+        match answer.ok().and_then(|a| a.ip.map(|ip| (a.service, ip))) {
+            Some((service, ip)) if !leaks::trace_matches(&ip, v4.as_deref(), v6.as_deref()) => {
+                return RouteStatus::Mismatch(format!(
+                    "{service} reports exit {ip} which differs from the verified addresses"
                 ));
             }
-            if !seen.contains(&ip) {
-                seen.push(ip);
-            }
+            Some(_) => {}
+            None => missing += 1,
         }
     }
-    if seen.len() > 1 {
-        return Some((
-            format!(
-                "the AI edges disagree on the exit: {} — per-domain routing leak",
-                seen.join(" vs ")
-            ),
-            now,
-        ));
+    if missing > 0 {
+        RouteStatus::Unavailable(format!(
+            "{missing} of {} route checks did not confirm the exit",
+            services.len()
+        ))
+    } else {
+        RouteStatus::Confirmed
     }
-    None
 }
 
 fn system_snapshot() -> System {
@@ -895,7 +958,7 @@ mod tests {
     #[tokio::test]
     async fn closed_channels_do_not_fire_events_or_probe() {
         let (net_tx, mut net_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-        let (probe_tx, mut probe_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let (probe_tx, mut probe_rx) = tokio::sync::mpsc::unbounded_channel::<bool>();
         drop(net_tx); // netwatch died / probe disabled: senders gone
         drop(probe_tx);
 
@@ -914,7 +977,7 @@ mod tests {
             "closed net channel must not look like a network event"
         );
         assert!(
-            !down,
+            down.is_none(),
             "closed probe channel must not look like a dead transport"
         );
     }
@@ -923,11 +986,11 @@ mod tests {
     #[tokio::test]
     async fn live_probe_channel_reports_down() {
         let (_net_tx, mut net_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-        let (probe_tx, mut probe_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let (probe_tx, mut probe_rx) = tokio::sync::mpsc::unbounded_channel::<bool>();
         let mut shutdown = Shutdown::new().unwrap();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(10)).await;
-            let _ = probe_tx.send(());
+            let _ = probe_tx.send(true);
         });
         let (_event, down) = wait_tick(
             Duration::from_secs(5),
@@ -938,13 +1001,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(down, "a real probe signal must come through");
+        assert_eq!(down, Some(true), "a real probe signal must come through");
     }
 
     #[tokio::test]
     async fn apply_notification_wakes_the_daemon() {
         let (_net_tx, mut net_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-        let (_probe_tx, mut probe_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let (_probe_tx, mut probe_rx) = tokio::sync::mpsc::unbounded_channel::<bool>();
         let mut shutdown = Shutdown::new().unwrap();
         let apply = Arc::new(tokio::sync::Notify::new());
         let wake = Arc::clone(&apply);
@@ -964,6 +1027,6 @@ mod tests {
         .unwrap();
         assert!(start.elapsed() < Duration::from_secs(1));
         assert!(!event);
-        assert!(!down);
+        assert!(down.is_none());
     }
 }

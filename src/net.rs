@@ -8,7 +8,7 @@ use std::net::IpAddr;
 
 use crate::{
     config::{AllowConfig, Config, State},
-    ipcheck::Verdict,
+    ipcheck::{Ipv6State, Verdict},
 };
 
 #[derive(Debug, Clone, Default)]
@@ -106,23 +106,7 @@ impl Allowlist {
 ///   IPv4 while the machine keeps a direct IPv6 route is exactly the leak
 ///   this tool exists to catch.
 pub fn allowed(verdict: &Verdict, list: &Allowlist) -> bool {
-    let Some(v4) = verdict.ipv4 else {
-        return false;
-    };
-    if !verdict.quorum {
-        return false;
-    }
-    if !one_allowed(v4, verdict.country.as_deref(), list) {
-        return false;
-    }
-    // The country answer belongs to the IPv4 check. Applying it to IPv6
-    // could allow a direct IPv6 route outside the tunnel.
-    if let Some(v6) = verdict.ipv6
-        && !list.allows_ip(v6)
-    {
-        return false;
-    }
-    true
+    deny_reason(verdict, list).is_none()
 }
 
 fn one_allowed(ip: IpAddr, country: Option<&str>, list: &Allowlist) -> bool {
@@ -150,11 +134,19 @@ pub fn effective(cfg: &Config, state: &State) -> (Allowlist, Option<String>) {
 pub enum DenyReason {
     /// No quorum (or no answer at all): the external IP is unknown.
     NoQuorum,
+    Ipv6Conflict,
+    Ipv6Unverified,
     /// The IPv4 address is known but not allowed.
-    Foreign { ip: IpAddr, country: Option<String> },
+    Foreign {
+        ip: IpAddr,
+        country: Option<String>,
+    },
     /// The IPv4 address is fine, but a direct IPv6 route is not allowed —
     /// the classic "VPN tunnels only IPv4" leak.
-    Ipv6Leak { v4: IpAddr, v6: IpAddr },
+    Ipv6Leak {
+        v4: IpAddr,
+        v6: IpAddr,
+    },
 }
 
 impl DenyReason {
@@ -165,6 +157,10 @@ impl DenyReason {
             DenyReason::NoQuorum => {
                 "cannot confirm the external IP (not enough services agreed)".to_string()
             }
+            DenyReason::Ipv6Conflict => {
+                "IPv6 services reported different exit addresses".to_string()
+            }
+            DenyReason::Ipv6Unverified => "no IPv6 service confirmed the exit address".to_string(),
             DenyReason::Foreign { ip, country } => match country {
                 Some(c) => format!("IP {ip} ({c}) is not allowed"),
                 None => format!(
@@ -193,6 +189,11 @@ pub fn deny_reason(verdict: &Verdict, list: &Allowlist) -> Option<DenyReason> {
             country: verdict.country.clone(),
         });
     }
+    match verdict.ipv6_state {
+        Ipv6State::Conflict => return Some(DenyReason::Ipv6Conflict),
+        Ipv6State::Required => return Some(DenyReason::Ipv6Unverified),
+        _ => {}
+    }
     if let Some(v6) = verdict.ipv6
         && !list.allows_ip(v6)
     {
@@ -210,6 +211,7 @@ mod tests {
             ipv4: v4.and_then(|s| s.parse().ok()),
             ipv6: v6.and_then(|s| s.parse().ok()),
             country: country.map(String::from),
+            ipv6_state: Ipv6State::Disabled,
             quorum: true,
         }
     }
@@ -261,6 +263,7 @@ mod tests {
             ipv4: None,
             ipv6: None,
             country: None,
+            ipv6_state: Ipv6State::Disabled,
             quorum: false,
         };
         assert!(!allowed(&unknown, &list));
@@ -389,6 +392,7 @@ mod properties {
                 // Half the generated verdicts also carry an IPv6 exit.
                 ipv6: (with_v6 % 2 == 0).then_some(IpAddr::V6("2001:db8::1".parse().unwrap())),
                 country,
+                ipv6_state: Ipv6State::Disabled,
                 quorum: quorum % 2 == 1,
             })
     }
@@ -404,7 +408,8 @@ mod properties {
         /// matter what the allowlist contains.
         #[test]
         fn no_quorum_never_allowed(v4 in proptest::option::of(any_ip()), list in any_list()) {
-            let verdict = Verdict { ipv4: v4, ipv6: None, country: None, quorum: false };
+            let verdict = Verdict { ipv4: v4, ipv6: None, country: None,
+            ipv6_state: Ipv6State::Disabled, quorum: false };
             prop_assert!(!allowed(&verdict, &list));
         }
 
@@ -429,7 +434,7 @@ mod properties {
                 &AllowConfig { ips: vec![], nets: vec![], countries: vec![listed.to_string()] },
                 &AllowConfig::default(),
             );
-            let verdict = Verdict { ipv4: Some(ip), ipv6: None, country: Some(listed.to_string()), quorum: true };
+            let verdict = Verdict { ipv4: Some(ip), ipv6: None, country: Some(listed.to_string()), ipv6_state: Ipv6State::Disabled, quorum: true };
             prop_assert!(allowed(&verdict, &list));
         }
     }

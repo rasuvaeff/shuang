@@ -18,7 +18,6 @@ use crate::{
     ipcheck::{self, CountryCache},
     net, netwatch,
     notify::Notifier,
-    procs,
     supervisor::{Frozen, Shutdown},
 };
 
@@ -132,8 +131,7 @@ pub async fn run(
 
         if network_event && cfg.timing.freeze_on_event_first {
             let system = System::new_all();
-            let tree = procs::tree(child_pid, &system);
-            frozen.freeze_tree(&tree, OWNER, &scope, &system)?;
+            frozen.freeze_roots(&[child_pid], OWNER, &scope, &system)?;
             let _ = guard.bad();
         }
 
@@ -167,16 +165,14 @@ pub async fn run(
         match guard.bad() {
             Stage::Freeze => {
                 let system = System::new_all();
-                let tree = procs::tree(child_pid, &system);
-                frozen.freeze_tree(&tree, OWNER, &scope, &system)?;
+                frozen.freeze_roots(&[child_pid], OWNER, &scope, &system)?;
                 eprintln!("shuang: {message} — froze {} process(es)", frozen.len());
                 log_event(config_path, "freeze", &format!("{program}: {message}"));
                 notifier.freeze_started(&message);
             }
             Stage::Frozen(elapsed) => {
                 let system = System::new_all();
-                let tree = procs::tree(child_pid, &system);
-                frozen.freeze_tree(&tree, OWNER, &scope, &system)?;
+                frozen.freeze_roots(&[child_pid], OWNER, &scope, &system)?;
                 let left = deadline.saturating_sub(elapsed).as_secs();
                 notifier.still_frozen(&message);
                 eprintln!("shuang: frozen, {left}s left for the allowed IP to come back");
@@ -185,8 +181,7 @@ pub async fn run(
                 eprintln!("shuang: allowed IP never came back — stopping {program}");
                 log_event(config_path, "close", program);
                 let system = System::new_all();
-                let tree = procs::tree(child_pid, &system);
-                frozen.freeze_tree(&tree, OWNER, &scope, &system)?;
+                frozen.freeze_roots(&[child_pid], OWNER, &scope, &system)?;
                 frozen.kill_owner(OWNER)?;
                 let _ = child.start_kill();
                 let _ = child.wait().await;

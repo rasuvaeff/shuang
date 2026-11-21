@@ -29,6 +29,8 @@ pub struct Snapshot {
     pub ipv4: Option<String>,
     pub ipv6: Option<String>,
     pub country: Option<String>,
+    pub ipv6_status: &'static str,
+    pub route_status: &'static str,
     pub quorum: bool,
     pub allowed: bool,
     pub frozen: usize,
@@ -220,6 +222,8 @@ async fn status(
         "ipv4": snapshot.as_ref().and_then(|s| s.ipv4.clone()),
         "ipv6": snapshot.as_ref().and_then(|s| s.ipv6.clone()),
         "country": snapshot.as_ref().and_then(|s| s.country.clone()),
+        "ipv6_status": snapshot.as_ref().map(|s| s.ipv6_status),
+        "route_status": snapshot.as_ref().map(|s| s.route_status),
         "quorum": snapshot.as_ref().is_some_and(|s| s.quorum),
         "allowed": snapshot.as_ref().is_some_and(|s| s.allowed),
         "frozen": snapshot.as_ref().map_or(0, |s| s.frozen),
@@ -931,6 +935,12 @@ const I18N = {
     'Rules applied': 'Правила действуют',
     'Could not apply rules': 'Не удалось применить правила',
     'Could not reach the daemon': 'Не удалось связаться с демоном',
+    'Route checks': 'Проверка маршрутов',
+    'Confirmed': 'Подтверждено',
+    'Mismatch': 'Расхождение',
+    'Unavailable': 'Нет ответа',
+    'Disabled': 'Отключено',
+    'Pending': 'Ожидает проверки',
     'Loading…': 'Загрузка…',
     'Settings': 'Настройки',
     'Leak report': 'Утечки',
@@ -1118,7 +1128,15 @@ async function refresh() {
     const verdict = document.createElement('div');
     verdict.textContent = [status.ipv4 && status.ipv6 ? status.ipv6 : '',
       status.allowed ? t('Allowed') : (status.deny_reason || '')].filter(Boolean).join(' · ');
-    network.replaceChildren(ip, verdict);
+    const checks = document.createElement('div');
+    checks.className = 'muted';
+    const labels = { confirmed: 'Confirmed', mismatch: 'Mismatch', unavailable: 'Unavailable',
+      disabled: 'Disabled', pending: 'Pending' };
+    checks.textContent = [
+      status.ipv6_status && 'IPv6 · ' + t(labels[status.ipv6_status]),
+      status.route_status && t('Route checks') + ' · ' + t(labels[status.route_status]),
+    ].filter(Boolean).join(' | ');
+    network.replaceChildren(ip, verdict, checks);
     byId('status').className = 'card ' + (status.allowed ? 'ok' : 'bad');
     renderRules();
     renderApps();

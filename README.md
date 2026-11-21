@@ -213,6 +213,7 @@ timeout_secs = 5
 min_agree = 2                       # ≥ services must name the same IPv4
 ip_services = [...]                 # default: ipify, icanhazip, ident.me, checkip.amazonaws.com
 ipv6_services = [...]
+strict_ipv6 = false                 # require an IPv6 result when services are configured
 country_services = ["https://api.country.is"]
 
 [timing]
@@ -241,6 +242,7 @@ every_secs = 60
 
 [route_check]
 enabled = true          # diagnostic request to an AI edge; split routing exposes its IP
+strict = false                      # deny when a route check cannot confirm the exit
 every_secs = 30
 ```
 
@@ -254,6 +256,8 @@ a café it is back on (Linux, macOS, Windows).
 Each app shows the daemon’s decision, a reason when blocked, and the time left before a forced stop. Changes show whether they are saved, being checked, or applied. To add an app, search running processes by name or path and preview the processes that the rule matches before saving.
 
 ## Reliability model
+
+The daemon acts on a transport failure during an in-flight check and verifies that Unix processes reached the stopped state. It rescans for late descendants and retries if a process continues while the denial is active. IPv6 disagreements always deny. Enable `strict_ipv6` or `route_check.strict` to require a response from the corresponding checks.
 
 - **Fail-closed:** an unknown verdict (no quorum, tie, timeouts) is never
   allowed. No exceptions.

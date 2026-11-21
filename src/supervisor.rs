@@ -164,61 +164,118 @@ impl Frozen {
         Ok(())
     }
 
-    pub fn freeze_tree(
+    pub fn freeze_roots(
+        &mut self,
+        roots: &[u32],
+        owner: &str,
+        scope: &str,
+        system: &System,
+    ) -> Result<bool> {
+        if roots.is_empty() {
+            return Ok(true);
+        }
+        let identities: Vec<_> = roots
+            .iter()
+            .filter_map(|pid| Identity::lookup(system, *pid))
+            .collect();
+        let tree = |system: &System| {
+            identities
+                .iter()
+                .filter(|root| root.alive(system))
+                .flat_map(|root| crate::procs::tree(root.pid, system))
+                .collect::<Vec<_>>()
+        };
+        let initially_confirmed = self.freeze_tree(&tree(system), owner, scope, system)?;
+        // Once the first pass has stopped the parents, their late children
+        // are visible in this fresh process snapshot.
+        let system = System::new_all();
+        let confirmed = self.freeze_tree(&tree(&system), owner, scope, &system)?;
+        Ok(initially_confirmed && confirmed)
+    }
+
+    fn freeze_tree(
         &mut self,
         tree: &[u32],
         owner: &str,
         scope: &str,
         system: &System,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let (_lock, mut journal) = self.open_journal()?;
-        let mut fresh = Vec::new();
+        let mut fresh = HashSet::new();
+        let mut first = HashSet::new();
+        let mut targets = Vec::new();
+        let mut seen = HashSet::new();
         for target in tree.iter().filter_map(|pid| Identity::lookup(system, *pid)) {
-            if target == self.supervisor
-                || journal.claims.iter().any(|claim| {
-                    claim.target == target
-                        && claim.supervisor == self.supervisor
-                        && claim.owner == owner
-                })
-            {
+            if target == self.supervisor || !seen.insert(target) {
                 continue;
             }
-            let first = !journal.claims.iter().any(|claim| claim.target == target);
+            targets.push(target);
+            if journal.claims.iter().any(|claim| {
+                claim.target == target
+                    && claim.supervisor == self.supervisor
+                    && claim.owner == owner
+            }) {
+                continue;
+            }
+            if !journal.claims.iter().any(|claim| claim.target == target) {
+                first.insert(target);
+            }
             journal.claims.push(Claim {
                 target,
                 supervisor: self.supervisor,
                 owner: owner.to_string(),
                 scope: scope.to_string(),
             });
-            fresh.push((target, first));
+            fresh.insert(target);
         }
-        if fresh.is_empty() {
-            return Ok(());
+        if !fresh.is_empty() {
+            self.save(&journal)?;
         }
-        // Record every new target before sending signals, including processes
-        // discovered on later ticks. Hold the lock through both operations.
-        self.save(&journal)?;
-        let system = process_snapshot(fresh.iter().map(|(target, _)| target.pid));
-        let mut failed = false;
-        for (target, first) in fresh {
-            // SIGSTOP is idempotent. Windows suspend is counted and must only
-            // happen once even when multiple supervisors claim the same tree.
-            if !target.alive(&system)
-                || ((first || cfg!(unix)) && platform::suspend(target.pid).is_err())
-            {
-                failed = true;
+        let system = process_snapshot(targets.iter().map(|target| target.pid));
+        let mut confirmed = true;
+        for target in &targets {
+            if !target.alive(&system) {
+                continue;
+            }
+            #[cfg(unix)]
+            let needs_suspend = !is_stopped(*target, &system);
+            #[cfg(windows)]
+            let needs_suspend = first.contains(target);
+            if needs_suspend && let Err(err) = platform::suspend(target.pid) {
+                confirmed = false;
+                eprintln!("shuang: could not suspend PID {}: {err:#}", target.pid);
                 journal.claims.retain(|claim| {
-                    !(claim.target == target
+                    !(claim.target == *target
                         && claim.supervisor == self.supervisor
                         && claim.owner == owner)
                 });
-                eprintln!("shuang: could not suspend PID {}", target.pid);
+                self.save(&journal)?;
             }
         }
-        if failed {
-            self.save(&journal)?;
+        #[cfg(unix)]
+        {
+            // SIGSTOP queues a signal. Give the kernel a bounded window to
+            // reach the stopped state and retry any still-running processes.
+            for attempt in 0..=3 {
+                let system = process_snapshot(targets.iter().map(|target| target.pid));
+                let pending: Vec<_> = targets
+                    .iter()
+                    .copied()
+                    .filter(|target| target.alive(&system) && !is_stopped(*target, &system))
+                    .collect();
+                if pending.is_empty() {
+                    return Ok(confirmed);
+                }
+                if attempt == 3 {
+                    return Ok(false);
+                }
+                for target in pending {
+                    let _ = platform::suspend(target.pid);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
         }
-        Ok(())
+        Ok(confirmed)
     }
 
     pub fn len(&self) -> usize {
@@ -317,6 +374,18 @@ impl Frozen {
         Ok(signalled)
     }
 }
+#[cfg(unix)]
+fn is_stopped(target: Identity, system: &System) -> bool {
+    system
+        .process(Pid::from_u32(target.pid))
+        .is_some_and(|process| {
+            matches!(
+                process.status(),
+                ProcessStatus::Stop | ProcessStatus::Tracing
+            )
+        })
+}
+
 fn process_snapshot(pids: impl Iterator<Item = u32>) -> System {
     let mut pids: Vec<_> = pids.map(Pid::from_u32).collect();
     pids.sort_unstable();
@@ -472,6 +541,51 @@ mod tests {
         assert_eq!(new.resume_owner("app", Some("policy-a")).unwrap(), 2);
         first.wait_stopped(false);
         later.wait_stopped(false);
+    }
+
+    #[test]
+    fn rescans_for_late_children_and_restops_resumed_processes() {
+        use std::io::{BufRead, BufReader, Write};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut parent = Target(
+            Command::new("sh")
+                .args(["-c", "read go; sleep 30 & echo $!; wait"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let pid = parent.0.id();
+        let before_fork = System::new_all();
+        parent.0.stdin.take().unwrap().write_all(b"go\n").unwrap();
+        let mut line = String::new();
+        BufReader::new(parent.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let child: u32 = line.trim().parse().unwrap();
+        let mut frozen = supervisor(dir.path(), std::process::id());
+        assert!(
+            frozen
+                .freeze_roots(&[pid], "app", "policy", &before_fork)
+                .unwrap()
+        );
+        let system = process_snapshot([pid, child].into_iter());
+        let child_id = Identity::lookup(&system, child).unwrap();
+        assert!(is_stopped(child_id, &system));
+
+        platform::resume(child).unwrap();
+        let started = Instant::now();
+        while is_stopped(child_id, &process_snapshot([child].into_iter())) {
+            assert!(started.elapsed() < Duration::from_secs(2));
+            thread::sleep(Duration::from_millis(5));
+        }
+        let confirmed = frozen
+            .freeze_roots(&[pid], "app", "policy", &system)
+            .unwrap();
+        let stopped = is_stopped(child_id, &process_snapshot([child].into_iter()));
+        frozen.kill_owner("app").unwrap();
+        assert!(confirmed && stopped);
     }
 
     #[test]

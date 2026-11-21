@@ -545,9 +545,151 @@ fn allow_persists_state_next_to_the_config() {
     assert!(raw.contains("203.0.113.77"));
 }
 
+#[test]
+fn conflicting_ipv6_answers_deny_a_confirmed_ipv4() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_config(dir.path(), 10, 1);
+    let (a, _) = spawn("2001:db8::1");
+    let (b, _) = spawn("2001:db8::2");
+    let initial = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(
+        &config,
+        initial.replace(
+            "ipv6_services = []",
+            &format!("ipv6_services = [\"{a}\", \"{b}\"]"),
+        ),
+    )
+    .unwrap();
+    let output = shuang(&["check", "--json", "--config", &config]);
+    assert_eq!(output.status.code(), Some(3));
+    let verdict: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(verdict["quorum"], true);
+    assert_eq!(verdict["allowed"], false);
+}
+
 #[cfg(target_os = "linux")]
 #[test]
-fn app_allowlist_alone_triggers_the_route_check() {
+fn probe_freezes_udp_sender_while_ip_request_is_pending() {
+    use std::{net::UdpSocket, sync::mpsc, time::Instant};
+
+    let dir = tempfile::tempdir().unwrap();
+    let marker = format!(
+        "udp-preview-{}",
+        dir.path().file_name().unwrap().to_string_lossy()
+    );
+    let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+    let probe_addr = probe.local_addr().unwrap();
+    let slow = TcpListener::bind("127.0.0.1:0").unwrap();
+    let ip_url = format!("http://{}", slow.local_addr().unwrap());
+    let (accepted, ready) = mpsc::channel();
+    let (release, done) = mpsc::channel::<()>();
+    thread::spawn(move || {
+        let mut buf = [0; 512];
+        let _request = loop {
+            let (mut request, _) = slow.accept().unwrap();
+            request
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            if request.read(&mut buf).is_ok_and(|read| read > 0) {
+                break request;
+            }
+        };
+        accepted.send(()).unwrap();
+        let _ = done.recv_timeout(Duration::from_secs(12));
+    });
+
+    let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
+    udp.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let mut packet = [0; 32];
+    let target = ManagedChild(
+        Command::new("bash")
+            .args([
+                "-c",
+                "while :; do printf ping >&3; sleep 0.05; done 3>/dev/udp/127.0.0.1/$1",
+                &marker,
+                &udp.local_addr().unwrap().port().to_string(),
+            ])
+            .spawn()
+            .unwrap(),
+    );
+    assert_eq!(udp.recv(&mut packet).unwrap(), 4);
+
+    let config = dir.path().join("config.toml");
+    std::fs::write(
+        &config,
+        format!(
+            r#"
+[[apps]]
+name = "udp-sender"
+match = ["args:{marker}"]
+[allow]
+ips = ["203.0.113.7"]
+[ip_check]
+ip_services = ["{ip_url}"]
+ipv6_services = []
+country_services = []
+min_agree = 1
+timeout_secs = 10
+interval_secs = 60
+[probe]
+enabled = true
+via = "direct"
+hosts = ["{probe_addr}"]
+[timing]
+grace_secs = 60
+"#
+        ),
+    )
+    .unwrap();
+
+    let _daemon = ManagedChild(
+        Command::new(env!("CARGO_BIN_EXE_shuang"))
+            .args([
+                "daemon",
+                "--no-tray",
+                "--no-notify",
+                "--no-panel",
+                "--config",
+            ])
+            .arg(config)
+            .spawn()
+            .unwrap(),
+    );
+    ready.recv_timeout(Duration::from_secs(4)).unwrap();
+    udp.recv(&mut packet).unwrap();
+    drop(probe);
+    let failed_at = Instant::now();
+    let status = format!("/proc/{}/status", target.0.id());
+    while !std::fs::read_to_string(&status)
+        .unwrap()
+        .lines()
+        .any(|line| line.starts_with("State:") && line.contains("T (stopped)"))
+    {
+        assert!(
+            failed_at.elapsed() < Duration::from_secs(4),
+            "transport signal did not interrupt the slow IP request"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    // Queued packets were sent before the process stopped. Drain the local
+    // socket and verify there are no further packets from the frozen sender.
+    udp.set_nonblocking(true).unwrap();
+    while udp.recv(&mut packet).is_ok() {}
+    udp.set_nonblocking(false).unwrap();
+    udp.set_read_timeout(Some(Duration::from_millis(250)))
+        .unwrap();
+    let error = udp.recv(&mut packet).unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    ));
+    drop(release);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn strict_route_check_freezes_an_app_allowed_by_its_own_rules() {
     use std::io::{BufRead, BufReader};
     use std::sync::mpsc;
 
@@ -572,13 +714,23 @@ fn app_allowlist_alone_triggers_the_route_check() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
+    let marker = format!(
+        "route-preview-{}",
+        dir.path().file_name().unwrap().to_string_lossy()
+    );
+    let target = ManagedChild(
+        Command::new("bash")
+            .args(["-c", "exec -a \"$1\" sleep 30", "shuang-test", &marker])
+            .spawn()
+            .unwrap(),
+    );
     std::fs::write(
         &path,
         format!(
             r#"
 [[apps]]
 name = "route-test"
-match = ["shuang-route-test"]
+match = ["args:{marker}"]
 [apps.allow]
 ips = ["203.0.113.7"]
 
@@ -593,6 +745,7 @@ proxy = "{proxy}"
 
 [route_check]
 enabled = true
+strict = true
 services = ["shuang-route.test"]
 "#
         ),
@@ -614,4 +767,16 @@ services = ["shuang-route.test"]
     );
     rx.recv_timeout(Duration::from_secs(5))
         .expect("the app-only allowance did not trigger a route check");
+    let started = std::time::Instant::now();
+    while !std::fs::read_to_string(format!("/proc/{}/status", target.0.id()))
+        .unwrap()
+        .lines()
+        .any(|line| line.starts_with("State:") && line.contains("T (stopped)"))
+    {
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "route failure did not freeze the app"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
 }

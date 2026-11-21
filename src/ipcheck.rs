@@ -18,10 +18,32 @@ pub struct Verdict {
     pub ipv4: Option<IpAddr>,
     /// IPv6 address, single answer is enough (checked separately from IPv4).
     pub ipv6: Option<IpAddr>,
+    pub ipv6_state: Ipv6State,
     /// Country of the current exit (best-effort, from `country_services`).
     pub country: Option<String>,
     /// Whether the IPv4 quorum was met. `false` means "unknown — not allowed".
     pub quorum: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Ipv6State {
+    #[default]
+    Disabled,
+    Confirmed,
+    Conflict,
+    Unavailable,
+    Required,
+}
+
+impl Ipv6State {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Confirmed => "confirmed",
+            Self::Conflict => "mismatch",
+            Self::Unavailable | Self::Required => "unavailable",
+        }
+    }
 }
 
 /// Cache of "exit subnet → country" answers for the current session. The
@@ -94,14 +116,23 @@ pub async fn check(cfg: &IpCheckConfig) -> Verdict {
         Err(_) => return Verdict::default(),
     };
 
-    let v4 = query_all(&client, &cfg.ip_services, Family::V4).await;
-    let v6 = query_all(&client, &cfg.ipv6_services, Family::V6).await;
-    let country = query_country(&client, &cfg.country_services).await;
-
+    let (v4, v6, country) = tokio::join!(
+        query_all(&client, &cfg.ip_services, Family::V4),
+        query_all(&client, &cfg.ipv6_services, Family::V6),
+        query_country(&client, &cfg.country_services)
+    );
     let (ipv4, quorum) = resolve(v4, cfg.min_agree);
+    let ipv6_state = match v6.first() {
+        None if cfg.ipv6_services.is_empty() => Ipv6State::Disabled,
+        None if cfg.strict_ipv6 => Ipv6State::Required,
+        None => Ipv6State::Unavailable,
+        Some(first) if v6.iter().any(|ip| ip != first) => Ipv6State::Conflict,
+        Some(_) => Ipv6State::Confirmed,
+    };
     Verdict {
         ipv4,
-        ipv6: resolve(v6, 1).0,
+        ipv6: (ipv6_state == Ipv6State::Confirmed).then(|| v6[0]),
+        ipv6_state,
         country,
         quorum,
     }
@@ -130,7 +161,16 @@ async fn query_all(client: &reqwest::Client, urls: &[String], family: Family) ->
         let client = client.clone();
         let url = url.clone();
         tasks.spawn(async move {
-            let body = client.get(&url).send().await.ok()?.text().await.ok()?;
+            let body = client
+                .get(&url)
+                .send()
+                .await
+                .ok()?
+                .error_for_status()
+                .ok()?
+                .text()
+                .await
+                .ok()?;
             family.parse(&body)
         });
     }
@@ -148,7 +188,16 @@ async fn query_country(client: &reqwest::Client, urls: &[String]) -> Option<Stri
         let client = client.clone();
         let url = url.clone();
         tasks.spawn(async move {
-            let body = client.get(&url).send().await.ok()?.text().await.ok()?;
+            let body = client
+                .get(&url)
+                .send()
+                .await
+                .ok()?
+                .error_for_status()
+                .ok()?
+                .text()
+                .await
+                .ok()?;
             let reply: CountryReply = serde_json::from_str(&body).ok()?;
             let country = reply.country.trim().to_ascii_uppercase();
             let ok = country.len() == 2 && country.chars().all(|c| c.is_ascii_alphabetic());

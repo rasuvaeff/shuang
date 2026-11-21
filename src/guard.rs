@@ -136,8 +136,6 @@ impl Guard {
         }
     }
 
-    /// Test-only introspection.
-    #[cfg(test)]
     pub fn is_frozen(&self) -> bool {
         self.frozen_since.is_some()
     }

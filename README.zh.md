@@ -196,6 +196,7 @@ timeout_secs = 5
 min_agree = 2                       # 至少 2 个服务给出相同 IPv4
 ip_services = [...]                 # 默认:ipify、icanhazip、ident.me、checkip.amazonaws.com
 ipv6_services = [...]
+strict_ipv6 = false                 # 配置 IPv6 服务时要求获得结果
 country_services = ["https://api.country.is"]
 
 [timing]
@@ -224,6 +225,7 @@ every_secs = 60
 
 [route_check]
 enabled = true          # 向 AI 边缘发送诊断请求;分流错误时会暴露出口 IP
+strict = false                      # 路由检查无法确认出口时阻止运行
 every_secs = 30
 ```
 
@@ -235,6 +237,8 @@ every_secs = 30
 每个应用显示守护进程的判定、阻止原因及强制终止前的剩余时间。面板会显示规则是已保存、正在检查还是已生效。添加应用时，可以按名称或路径搜索进程，并在保存前预览规则匹配的进程。
 
 ## 可靠性模型
+
+传输中断可以打断正在进行的检查。守护进程在 Unix 上确认进程已停止，并再次扫描新出现的子进程。禁止运行期间，如果进程恢复，会重新冻结。IPv6 结果冲突时始终阻止运行。启用 `strict_ipv6` 或 `route_check.strict` 可要求相应检查返回确认结果。
 
 - **Fail-closed:**未知的判定(无仲裁、平票、超时)永远不会被允许。没有例外。
 - **快速响应(Linux):**netlink 路由/地址/链路事件无需等待下一个检查间隔便触发复查。

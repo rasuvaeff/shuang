@@ -76,6 +76,7 @@ countries = ["NL"]
 [ip_check]
 ip_services = [...]           # default: ipify, icanhazip, ident.me, checkip.amazonaws.com
 ipv6_services = [...]
+strict_ipv6 = false                 # require IPv6 evidence when services are configured
 country_services = ["https://api.country.is"]
 min_agree = 2
 interval_secs = 5             # poll backstop; netlink events react instantly (Linux)
@@ -105,6 +106,7 @@ trusted_networks = ["aa:bb:cc:dd:ee:ff"]  # gateway MACs where protection is off
 
 [route_check]
 enabled = true            # daemon freezes on split-routing (trace != exits)
+strict = false                      # deny when an enabled route check lacks confirmation
 every_secs = 30
 services = [...]  # default: claude.ai, api.anthropic.com, chatgpt.com, api.openai.com, www.perplexity.ai
 ```

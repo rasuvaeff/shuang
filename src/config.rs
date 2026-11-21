@@ -124,6 +124,8 @@ pub struct IpCheckConfig {
     pub ip_services: Vec<String>,
     /// URLs that answer with the caller's IPv6 address as plain text.
     pub ipv6_services: Vec<String>,
+    /// Require an IPv6 answer when IPv6 services are configured.
+    pub strict_ipv6: bool,
     /// URLs that answer with a JSON object carrying a `country` key.
     pub country_services: Vec<String>,
     /// How many services must name the same IPv4 address for the answer to
@@ -160,6 +162,7 @@ impl Default for IpCheckConfig {
             .into_iter()
             .map(String::from)
             .collect(),
+            strict_ipv6: false,
             country_services: vec!["https://api.country.is".to_string()],
             min_agree: 2,
             interval_secs: 5,
@@ -300,6 +303,8 @@ pub struct RouteCheckConfig {
     /// exits and freezes on a mismatch (split routing). Off by default —
     /// enable when your VPN does per-site routing.
     pub enabled: bool,
+    /// Treat unanswered route checks as a denial.
+    pub strict: bool,
     /// How often (seconds) the daemon re-asks the services. Default 30.
     pub every_secs: u64,
 }
@@ -308,6 +313,7 @@ impl Default for RouteCheckConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            strict: false,
             every_secs: 30,
             services: [
                 "claude.ai",
