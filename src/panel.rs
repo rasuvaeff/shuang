@@ -698,7 +698,7 @@ const PAGE_HTML: &str = r#"<!doctype html>
   <select id="profile"></select>
   <div class="muted">Profiles come from [profiles.name] in config.toml.</div></div>
 <div class="card"><strong>Settings</strong>
-  <div>interval <input type="number" id="s_interval" style="width:5rem"> s ·
+  <div title="How often the external IP is re-checked">interval <input type="number" id="s_interval" style="width:5rem"> s ·
        grace <input type="number" id="s_grace" style="width:4rem"> s ·
        close <input type="number" id="s_close" style="width:4rem"> s ·
        quorum <input type="number" id="s_min_agree" style="width:3rem"></div>
@@ -715,6 +715,9 @@ const PAGE_HTML: &str = r#"<!doctype html>
     <option value="direct">direct TCP only</option></select></div>
   <div style="margin-top:.3rem">app proxy — how your apps actually connect (e.g. http://127.0.0.1:10809; empty = environment):
     <input type="text" id="s_app_proxy" style="width:100%"></div>
+
+  <details style="margin-top:.8rem"><summary style="cursor:pointer;color:#7aa2f7">What do all these settings mean?</summary>
+  <div class="muted" style="margin-top:.4rem" id="helpbox"></div></details>
   <div style="margin-top:.5rem"><label><input type="checkbox" id="s_paused"> ⏸ PROTECTION PAUSED (no freezing at all)</label></div>
   <div style="margin-top:.6rem"><button onclick="saveSettings()">Save settings</button>
        <button onclick="trustNetwork()">Trust this network</button>
@@ -778,7 +781,35 @@ let LANG = localStorage.getItem('shuang-lang') ||
   ((navigator.language || '').toLowerCase().startsWith('ru') ? 'ru' : 'en');
 function t(s) { return (I18N[LANG] && I18N[LANG][s]) || s; }
 function setLang(l) { LANG = l; localStorage.setItem('shuang-lang', l); applyI18n(); }
+const HELP = {
+  en: `<b>interval</b> — how often the external IP is re-checked (seconds). 5 is a good default.<br>
+<b>grace / close</b> — when the IP goes bad the app is frozen; grace is how long we wait for the good IP to return before stopping the app (close = polite-stop timeout).<br>
+<b>quorum</b> — how many IP services must agree on the address. Fewer agreeing = "unknown", and unknown is never allowed.<br>
+<b>desktop notifications</b> — popups about freezes/recoveries.<br>
+<b>paranoid</b> — freeze FIRST on any network change, verify after. Zero leak window, tiny pauses.<br>
+<b>reputation guard</b> — freeze while the exit IP is flagged as proxy/datacenter.<br>
+<b>fast probe</b> — a 1-second health ping; freezes the instant the transport dies (instead of waiting for IP-check timeouts).<br>
+<b>probe path</b> — which route the probe tests: "proxy only" = the exact route your apps use (recommended when they go via a local proxy).<br>
+<b>app proxy</b> — the proxy address your apps use; all checks then see exactly what they see.<br>
+<b>stability gate</b> — after a freeze, wait N seconds of stable good verdict before unfreezing (stops IP flapping from reaching the app).<br>
+<b>watchdog</b> — names of your proxy-client processes; if that process dies, everything freezes instantly.<br>
+<b>PROTECTION PAUSED</b> — the big red button: no freezing at all, everything resumes. Use when something misbehaves.`,
+  ru: `<b>интервал</b> — как часто перепроверяется внешний IP (в секундах). 5 — нормальное значение по умолчанию.<br>
+<b>grace / close</b> — при плохом IP приложение замораживается; grace — сколько секунд ждать возвращения правильного IP перед остановкой (close — таймаут «вежливого» закрытия).<br>
+<b>кворум</b> — сколько IP-сервисов должны сойться на адресе. Меньше — «неизвестно», а неизвестное никогда не разрешается.<br>
+<b>уведомления</b> — всплывающие сообщения о заморозках и восстановлении.<br>
+<b>паранойя</b> — при любом изменении сети сначала заморозить, потом проверять. Нулевое окно утечки, ценой микро-пауз.<br>
+<b>репутация</b> — заморозка, пока выходной IP помечен как прокси/датацентр.<br>
+<b>быстрый зонд</b> — проверка здоровья раз в секунду; мгновенная заморозка при смерти транспорта (не ждём таймауты IP-проверок).<br>
+<b>путь зонда</b> — какой маршрут проверять: «proxy only» = ровно тот путь, которым ходят ваши приложения (рекомендуется при локальном прокси).<br>
+<b>app proxy</b> — адрес прокси, которым пользуются ваши приложения; все проверки будут видеть то же, что видят они.<br>
+<b>гейт стабильности</b> — после заморозки ждать N секунд стабильного «хорошо» перед разморозкой (скачки IP не доходят до приложения).<br>
+<b>watchdog</b> — имена процессов вашего прокси-клиента; если процесс умрёт — мгновенная заморозка всего.<br>
+<b>ПАУЗА ЗАЩИТЫ</b> — большая красная кнопка: никаких заморозок, всё разморожено. Когда «что-то странно — сначала выключи, потом разбирайся».`
+};
 function applyI18n() {
+  const hb = document.getElementById('helpbox');
+  if (hb) hb.innerHTML = HELP[LANG] || HELP.en;
   document.querySelectorAll('strong').forEach(e => { if (!e.dataset.orig) e.dataset.orig = e.textContent; e.textContent = t(e.dataset.orig); });
   document.querySelectorAll('input[type=text], input:not([type])').forEach(e => { if (e.placeholder && !e.dataset.p) e.dataset.p = e.placeholder; if (e.dataset.p) e.placeholder = t(e.dataset.p); });
   document.querySelectorAll('button').forEach(e => { if (!e.dataset.orig) e.dataset.orig = e.textContent; const v = t(e.dataset.orig); if (v !== e.dataset.orig || e.dataset.orig !== e.textContent) e.textContent = v; });
