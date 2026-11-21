@@ -157,14 +157,12 @@ mod native {
                     "quit" => {
                         self.quit.store(true, std::sync::atomic::Ordering::SeqCst);
                     }
-                    "panel" => {
-                        if self.panel_url.is_some() {
-                            let _ = std::process::Command::new(
-                                std::env::current_exe().unwrap_or_else(|_| "shuang".into()),
-                            )
-                            .arg("panel")
-                            .spawn();
-                        }
+                    "panel" if self.panel_url.is_some() => {
+                        let _ = std::process::Command::new(
+                            std::env::current_exe().unwrap_or_else(|_| "shuang".into()),
+                        )
+                        .arg("panel")
+                        .spawn();
                     }
                     _ => {}
                 }
