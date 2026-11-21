@@ -668,6 +668,9 @@ const PAGE_HTML: &str = r#"<!doctype html>
 </head>
 <body>
 <h1>shuang <span>霜</span></h1>
+<div style="position:absolute;top:1rem;right:1rem">
+  <button onclick="setLang('ru')">RU</button>
+  <button onclick="setLang('en')">EN</button></div>
 <div class="card" id="status">loading…</div>
 <div class="card"><strong>Protected apps</strong><ul id="apps"></ul>
   <form id="addapp"><input type="text" id="appname" placeholder="name (e.g. claude-code)">
@@ -710,6 +713,66 @@ const PAGE_HTML: &str = r#"<!doctype html>
 <div class="card"><strong>Recent events</strong><pre id="events"></pre></div>
 <script>
 const token = new URLSearchParams(location.search).get('token');
+const I18N = {
+  ru: {
+    'Protected apps': 'Защищаемые приложения',
+    'Settings': 'Настройки',
+    'Leak report': 'Утечки',
+    'Diagnostics': 'Диагностика',
+    'VPN health (7 days)': 'Здоровье VPN (7 дней)',
+    'Recent events': 'События',
+    'name (e.g. claude-code)': 'имя (напр. claude-code)',
+    'match pattern (e.g. claude)': 'паттерн (напр. claude)',
+    'only from countries (e.g. NL,DE) — optional': 'только из стран (напр. NL,DE) — необязательно',
+    'Add': 'Добавить',
+    'Add from running processes': 'Добавить из запущенных процессов',
+    'Panel-added apps live in state.toml; [[apps]] in config.toml still applies. Restart the daemon to apply changes.':
+      'Приложения из панели живут в state.toml; [[apps]] из config.toml тоже действует. Изменения — после перезапуска демона.',
+    'none running': 'ничего не запущено',
+    'none': 'нет',
+    's ·': 'с ·',
+    'desktop notifications': 'уведомления на рабочем столе',
+    'paranoid (freeze on network event first)': 'паранойя (заморозка при событии сети до проверки)',
+    'reputation guard': 'репутация выхода',
+    'fast probe (1s transport check)': 'быстрый зонд (проверка транспорта 1с)',
+    'PROTECTION PAUSED (no freezing at all)': 'ЗАЩИТА НА ПАУЗЕ (никаких заморозок)',
+    'watchdog processes (comma-separated, e.g. v2ray, clash — empty = off)':
+      'процессы прокси-клиента (через запятую: v2ray, clash — пусто = выкл)',
+    'interval': 'интервал',
+    'grace': 'grace',
+    'close': 'close',
+    'quorum': 'кворум',
+    'stability gate': 'гейт стабильности',
+    'Save settings': 'Сохранить настройки',
+    'Trust this network': 'Доверять этой сети',
+    'Run checks': 'Проверить',
+    'Run doctor': 'Диагностика',
+    'Refresh': 'Обновить',
+    'saved — restart the daemon to apply': 'сохранено — перезапустите демона',
+    'IP, subnet (1.2.3.0/24), or country (NL)': 'IP, подсеть (1.2.3.0/24) или страна (NL)',
+    'Allowed': 'Разрешено',
+    'no events yet': 'событий пока нет',
+    'running…': 'выполняется…',
+    'Токен панели истёк — демон перезапускался.<br>Откройте панель заново из меню трея (Open panel).':
+      'Токен панели истёк — демон перезапускался.<br>Откройте панель заново из меню трея (Open panel).',
+  },
+  en: {}
+};
+let LANG = localStorage.getItem('shuang-lang') ||
+  ((navigator.language || '').toLowerCase().startsWith('ru') ? 'ru' : 'en');
+function t(s) { return (I18N[LANG] && I18N[LANG][s]) || s; }
+function setLang(l) { LANG = l; localStorage.setItem('shuang-lang', l); applyI18n(); }
+function applyI18n() {
+  document.querySelectorAll('strong').forEach(e => { if (!e.dataset.orig) e.dataset.orig = e.textContent; e.textContent = t(e.dataset.orig); });
+  document.querySelectorAll('input[type=text], input:not([type])').forEach(e => { if (e.placeholder && !e.dataset.p) e.dataset.p = e.placeholder; if (e.dataset.p) e.placeholder = t(e.dataset.p); });
+  document.querySelectorAll('button').forEach(e => { if (!e.dataset.orig) e.dataset.orig = e.textContent; const v = t(e.dataset.orig); if (v !== e.dataset.orig || e.dataset.orig !== e.textContent) e.textContent = v; });
+  document.querySelectorAll('label').forEach(e => {
+    const cb = e.querySelector('input'); const txt = e.textContent.replace(/^\s+|\s+$/g,'');
+    if (!e.dataset.orig) e.dataset.orig = txt.replace(/^[^ ]* /,'').trim() || txt;
+    if (cb) { e.textContent = ''; e.appendChild(cb); e.appendChild(document.createTextNode(' ' + t(e.dataset.orig))); }
+  });
+}
+applyI18n();
 const H = { 'X-Shuang-Token': token };
 async function refresh() {
   try {
