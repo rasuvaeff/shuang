@@ -299,6 +299,7 @@ async fn get_settings(
         "stability_secs": cfg.timing.stability_secs,
         "probe_enabled": cfg.probe.enabled,
         "probe_via": format!("{:?}", cfg.probe.via).to_lowercase(),
+        "app_proxy": cfg.ip_check.proxy,
         "protection_paused": cfg.protection_paused,
         "trusted_networks": state.trusted_networks,
         "gateway_mac": crate::trusted::gateway_mac(),
@@ -320,6 +321,7 @@ struct SettingsBody {
     probe_enabled: Option<bool>,
     protection_paused: Option<bool>,
     probe_via: Option<String>,
+    app_proxy: Option<String>,
 }
 
 async fn post_settings(
@@ -385,6 +387,7 @@ async fn post_settings(
     {
         s.probe_via = Some(via.to_string());
     }
+    s.app_proxy = parsed.app_proxy;
     match config::save_state(&app.config_path, &state) {
         Ok(()) => (StatusCode::OK, "saved — restart the daemon to apply").into_response(),
         Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
@@ -710,6 +713,8 @@ const PAGE_HTML: &str = r#"<!doctype html>
     <option value="auto">auto (proxy when set)</option>
     <option value="proxy">proxy only (the apps' path)</option>
     <option value="direct">direct TCP only</option></select></div>
+  <div style="margin-top:.3rem">app proxy — how your apps actually connect (e.g. http://127.0.0.1:10809; empty = environment):
+    <input type="text" id="s_app_proxy" style="width:100%"></div>
   <div style="margin-top:.5rem"><label><input type="checkbox" id="s_paused"> ⏸ PROTECTION PAUSED (no freezing at all)</label></div>
   <div style="margin-top:.6rem"><button onclick="saveSettings()">Save settings</button>
        <button onclick="trustNetwork()">Trust this network</button>
@@ -867,6 +872,7 @@ async function loadSettings() {
   document.getElementById('s_probe').checked = s.probe_enabled;
   document.getElementById('s_paused').checked = s.protection_paused;
   document.getElementById('s_probe_via').value = s.probe_via || 'auto';
+  document.getElementById('s_app_proxy').value = s.app_proxy || '';
   document.getElementById('s_stability').value = s.stability_secs;
   document.getElementById('trusted_macs').textContent =
     s.trusted_networks.length ? 'trusted: ' + s.trusted_networks.join(', ') : '';
@@ -885,6 +891,7 @@ async function saveSettings() {
     probe_enabled: document.getElementById('s_probe').checked,
     protection_paused: document.getElementById('s_paused').checked,
     probe_via: document.getElementById('s_probe_via').value,
+    app_proxy: document.getElementById('s_app_proxy').value.trim(),
     stability_secs: +document.getElementById('s_stability').value,
   };
   const r = await fetch('/api/settings', { method: 'POST', headers: H,

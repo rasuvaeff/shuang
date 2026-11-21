@@ -130,6 +130,10 @@ pub struct IpCheckConfig {
     pub interval_secs: u64,
     /// Per-request timeout in seconds.
     pub timeout_secs: u64,
+    /// The proxy your protected apps actually use (e.g. "http://127.0.0.1:10809").
+    /// When set, the IP checks AND the probe go through exactly this path;
+    /// empty = follow the http(s)_proxy environment (or direct when unset).
+    pub proxy: Option<String>,
 }
 
 impl Default for IpCheckConfig {
@@ -156,6 +160,7 @@ impl Default for IpCheckConfig {
             min_agree: 2,
             interval_secs: 5,
             timeout_secs: 5,
+            proxy: None,
         }
     }
 }
@@ -359,6 +364,9 @@ pub struct SettingsOverride {
     pub protection_paused: Option<bool>,
     /// Which path the probe exercises: auto | proxy | direct.
     pub probe_via: Option<String>,
+    /// The proxy the protected apps use ("http://127.0.0.1:10809"); empty =
+    /// follow the environment.
+    pub app_proxy: Option<String>,
 }
 
 /// Default config path: `$XDG_CONFIG_HOME/shuang/config.toml`, falling back to
@@ -417,6 +425,13 @@ impl Config {
         }
         if let Some(v) = state.settings.protection_paused {
             self.protection_paused = v;
+        }
+        if let Some(url) = state.settings.app_proxy.as_deref() {
+            self.ip_check.proxy = if url.trim().is_empty() {
+                None
+            } else {
+                Some(url.trim().to_string())
+            };
         }
         if let Some(via) = state.settings.probe_via.as_deref() {
             self.probe.via = match via {

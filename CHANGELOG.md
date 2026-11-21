@@ -140,4 +140,13 @@
 - The panel shows an explicit "token expired — reopen from the tray" message
   in stale tabs instead of an eternal "loading".
 
+## Unreleased
+
+- `app proxy` setting (panel + `[ip_check] proxy`): the proxy your protected
+  apps actually use. When set, the IP checks AND the probe exercise exactly
+  that path — per-user setups (custom ports, no env) are first-class.
+- Probe path selector (auto/proxy/direct) in the panel.
+- GUI window exits cleanly on close (no lingering processes); RU panel
+  translations.
+
 ## Planned

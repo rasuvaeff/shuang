@@ -107,7 +107,7 @@ pub async fn run(
     let (net_tx, mut net_rx) = tokio::sync::mpsc::unbounded_channel();
     netwatch::spawn(net_tx.clone());
     let (probe_tx, mut probe_rx) = tokio::sync::mpsc::unbounded_channel();
-    probe::spawn(&cfg.probe, probe_tx);
+    probe::spawn_with_proxy(&cfg.probe, probe_tx, cfg.ip_check.proxy.clone());
     let mut shutdown = Shutdown::new()?;
 
     eprintln!(
