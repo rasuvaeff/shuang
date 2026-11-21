@@ -122,6 +122,7 @@ pub async fn run(
 
     let mut event_pending = false;
     let mut probe_down = false;
+    let mut probe_episode: Option<String> = None;
     loop {
         // Probe-down always freezes (a dead transport leaks nothing good);
         // paranoid mode additionally freezes on plain network events.
@@ -131,11 +132,13 @@ pub async fn run(
                 .map(|s| s.message().to_string())
                 .unwrap_or_else(|| "transport probe failed".to_string());
             eprintln!("shuang: {reason}");
-            log_event(
-                config_path,
-                state.map(|s| s.event_kind()).unwrap_or("probe-down"),
-                &reason,
-            );
+            // Log ONCE per distinct episode: the raw probe fires every second
+            // (2026-11: one flapping day wrote 125k history lines).
+            let kind = state.map(|s| s.event_kind()).unwrap_or("probe-down");
+            if probe_episode.as_deref() != Some(kind) {
+                probe_episode = Some(kind.to_string());
+                log_event(config_path, kind, &reason);
+            }
             for app in cfg.apps.iter() {
                 for (_, pid) in procs::find_targets(&app.r#match, &system_snapshot()) {
                     let tree = procs::tree(pid, &system_snapshot());
@@ -295,6 +298,22 @@ pub async fn run(
                     "exit-change",
                     &format!("{ip} (was {})", last_exit.unwrap_or_default()),
                 );
+                // A residential address (not a VPN/proxy/hosting IP) right
+                // after a VPN exit is the user's HOME IP leaking through a
+                // dead tunnel — the single worst outcome this tool exists to
+                // catch. Name it loudly.
+                if let Some(client) = &route_client {
+                    let rep = leaks::fetch_reputation(client, &ip).await;
+                    if rep.proxy == Some(false) && rep.hosting == Some(false) {
+                        let msg = format!(
+                            "HOME IP LEAK: traffic now exits via {ip} \
+                             (residential, proxy=false) — your real address is exposed"
+                        );
+                        eprintln!("shuang: {msg}");
+                        log_event(config_path, "home-ip-leak", &msg);
+                        notifier.alert(&msg);
+                    }
+                }
             }
             last_exit = Some(ip);
         }

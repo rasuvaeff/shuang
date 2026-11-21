@@ -109,7 +109,7 @@ mod native {
         tray: Option<tray_icon::TrayIcon>,
         status_item: tray_icon::menu::MenuItem,
         panel_item: tray_icon::menu::MenuItem,
-        panel_url: Option<String>,
+        panel_url: Option<()>,
         pub(super) quit: Arc<AtomicBool>,
     }
 
@@ -135,8 +135,8 @@ mod native {
                     }
                     self.status_item.set_text(detail);
                 }
-                Msg::PanelUrl(url) => {
-                    self.panel_url = Some(url);
+                Msg::PanelUrl(_url) => {
+                    self.panel_url = Some(()); // enabled; the click spawns `shuang panel`
                     self.panel_item.set_enabled(true);
                 }
             }
@@ -158,8 +158,12 @@ mod native {
                         self.quit.store(true, std::sync::atomic::Ordering::SeqCst);
                     }
                     "panel" => {
-                        if let Some(url) = &self.panel_url {
-                            crate::tray::open_url(url);
+                        if self.panel_url.is_some() {
+                            let _ = std::process::Command::new(
+                                std::env::current_exe().unwrap_or_else(|_| "shuang".into()),
+                            )
+                            .arg("panel")
+                            .spawn();
                         }
                     }
                     _ => {}
@@ -311,12 +315,14 @@ impl ksni::Tray for ShuangTray {
             .into(),
             ksni::MenuItem::Separator,
         ];
-        if let Some(url) = &self.panel_url {
-            let url = url.clone();
+        if self.panel_url.is_some() {
             items.push(
                 StandardItem {
                     label: "Open panel".to_string(),
-                    activate: Box::new(move |_| open_url(&url)),
+                    activate: Box::new(|_| {
+                        let exe = std::env::current_exe().unwrap_or_else(|_| "shuang".into());
+                        let _ = std::process::Command::new(exe).arg("panel").spawn();
+                    }),
                     ..StandardItem::default()
                 }
                 .into(),

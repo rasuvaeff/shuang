@@ -71,7 +71,7 @@ pub async fn spawn(shared: Shared, config_path: PathBuf, no_panel: bool) -> Opti
         .with_state(AppState {
             shared,
             token: token.clone(),
-            config_path,
+            config_path: config_path.clone(),
         });
 
     let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
@@ -96,6 +96,12 @@ pub async fn spawn(shared: Shared, config_path: PathBuf, no_panel: bool) -> Opti
     });
 
     let url = format!("http://127.0.0.1:{port}/?token={token}");
+    // Persist for `shuang panel` (the GUI window process) and the tray.
+    {
+        let mut state = config::load_state(&config_path.clone());
+        state.panel_url = Some(url.clone());
+        let _ = config::save_state(&config_path, &state);
+    }
     Some(Panel { url, quit })
 }
 
@@ -701,6 +707,13 @@ const token = new URLSearchParams(location.search).get('token');
 const H = { 'X-Shuang-Token': token };
 async function refresh() {
   try {
+    const probe = await fetch('/api/status?token=' + token, { headers: H });
+    if (probe.status === 403) {
+      document.body.innerHTML = '<div style="font:15px system-ui;padding:3rem;color:#e6e6e6;background:#14161a;height:100%;box-sizing:border-box">' +
+        'Токен панели истёк — демон перезапускался.<br>Откройте панель заново из меню трея (Open panel).</div>';
+      clearInterval(refreshTimer);
+      return;
+    }
     const s = await (await fetch('/api/status', { headers: H })).json();
     const st = document.getElementById('status');
     const cls = s.allowed ? 'ok' : 'bad';
@@ -839,7 +852,7 @@ async function trustNetwork() {
   alert(await r.text());
   loadSettings();
 }
-refresh(); loadSettings(); loadApps(); setInterval(refresh, 3000);
+const refreshTimer = setInterval(refresh, 3000); refresh(); loadSettings(); loadApps();
 </script>
 </body>
 </html>"#;

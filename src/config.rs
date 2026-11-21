@@ -288,6 +288,8 @@ pub struct State {
     pub apps: Vec<AppSpec>,
     /// Trusted gateway MACs added via the panel.
     pub trusted_networks: Vec<String>,
+    /// The running daemon's panel URL (with token), for `shuang panel`.
+    pub panel_url: Option<String>,
 }
 
 /// Per-setting overrides written by the panel; `None` = keep the config value.
