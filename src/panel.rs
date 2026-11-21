@@ -298,6 +298,7 @@ async fn get_settings(
         "reputation_enabled": cfg.reputation.enabled,
         "stability_secs": cfg.timing.stability_secs,
         "probe_enabled": cfg.probe.enabled,
+        "probe_via": format!("{:?}", cfg.probe.via).to_lowercase(),
         "protection_paused": cfg.protection_paused,
         "trusted_networks": state.trusted_networks,
         "gateway_mac": crate::trusted::gateway_mac(),
@@ -318,6 +319,7 @@ struct SettingsBody {
     stability_secs: Option<u64>,
     probe_enabled: Option<bool>,
     protection_paused: Option<bool>,
+    probe_via: Option<String>,
 }
 
 async fn post_settings(
@@ -377,6 +379,11 @@ async fn post_settings(
     }
     if parsed.protection_paused.is_some() {
         s.protection_paused = parsed.protection_paused;
+    }
+    if let Some(via) = parsed.probe_via.as_deref()
+        && matches!(via, "auto" | "proxy" | "direct")
+    {
+        s.probe_via = Some(via.to_string());
     }
     match config::save_state(&app.config_path, &state) {
         Ok(()) => (StatusCode::OK, "saved — restart the daemon to apply").into_response(),
@@ -699,6 +706,10 @@ const PAGE_HTML: &str = r#"<!doctype html>
     <input type="text" id="s_watchdog" style="width:100%"></div>
   <div style="margin-top:.5rem"><label><input type="checkbox" id="s_probe"> fast probe (1s transport check)</label>
     · stability gate <input type="number" id="s_stability" style="width:4rem"> s</div>
+  <div style="margin-top:.3rem">probe path: <select id="s_probe_via">
+    <option value="auto">auto (proxy when set)</option>
+    <option value="proxy">proxy only (the apps' path)</option>
+    <option value="direct">direct TCP only</option></select></div>
   <div style="margin-top:.5rem"><label><input type="checkbox" id="s_paused"> ⏸ PROTECTION PAUSED (no freezing at all)</label></div>
   <div style="margin-top:.6rem"><button onclick="saveSettings()">Save settings</button>
        <button onclick="trustNetwork()">Trust this network</button>
@@ -855,6 +866,7 @@ async function loadSettings() {
   document.getElementById('s_watchdog').value = (s.watchdog_processes || []).join(', ');
   document.getElementById('s_probe').checked = s.probe_enabled;
   document.getElementById('s_paused').checked = s.protection_paused;
+  document.getElementById('s_probe_via').value = s.probe_via || 'auto';
   document.getElementById('s_stability').value = s.stability_secs;
   document.getElementById('trusted_macs').textContent =
     s.trusted_networks.length ? 'trusted: ' + s.trusted_networks.join(', ') : '';
@@ -872,6 +884,7 @@ async function saveSettings() {
       .map(s => s.trim()).filter(s => s.length > 0),
     probe_enabled: document.getElementById('s_probe').checked,
     protection_paused: document.getElementById('s_paused').checked,
+    probe_via: document.getElementById('s_probe_via').value,
     stability_secs: +document.getElementById('s_stability').value,
   };
   const r = await fetch('/api/settings', { method: 'POST', headers: H,

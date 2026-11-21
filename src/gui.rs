@@ -40,8 +40,10 @@ fn run_webview(url: &str) -> Result<()> {
 
     window.show_all();
     window.connect_delete_event(|_, _| {
-        gtk::main_quit();
-        gtk::glib::Propagation::Proceed
+        // wry's webview keeps its own nested GTK loop; main_quit() may only
+        // unwind one level and leave the process lingering. This is a
+        // dedicated window process — exit outright.
+        std::process::exit(0);
     });
     gtk::main();
     Ok(())

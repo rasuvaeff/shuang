@@ -38,6 +38,8 @@ pub struct Config {
     pub reputation: ReputationConfig,
     /// Master pause: no freezing at all (the "something is wrong" valve).
     pub protection_paused: bool,
+    /// Which path the probe exercises: auto | proxy | direct.
+    pub probe_via: Option<String>,
     /// Fast transport probe: a 1-second TCP ping freezing the instant the
     /// transport dies; also classifies vpn-down vs offline.
     pub probe: ProbeConfig,
@@ -214,7 +216,12 @@ pub struct ReputationConfig {
 pub struct ProbeConfig {
     /// Enable the 1-second transport probe.
     pub enabled: bool,
-    /// `host:port` pairs probed by a direct TCP connect (no proxy). All
+    /// Which path to probe — the one your apps actually use:
+    /// "auto" (default): via http(s)_proxy when set, raw TCP otherwise;
+    /// "proxy": only through the proxy (TUN flaps must not freeze apps
+    /// that never use TUN); "direct": only raw TCP.
+    pub via: ProbeVia,
+    /// `host:port` pairs probed when exercising the raw-TCP path. All
     /// failing = transport down = instant freeze.
     pub hosts: Vec<String>,
     /// When the transport is down, ask one direct (proxy-less) IP check to
@@ -222,10 +229,43 @@ pub struct ProbeConfig {
     pub distinguish_offline: bool,
 }
 
+/// The transport path the probe exercises.
+#[derive(Debug, Default, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProbeVia {
+    /// http(s)_proxy when set, raw TCP otherwise.
+    #[default]
+    Auto,
+    /// Only through the proxy — protects apps that use the proxy env.
+    Proxy,
+    /// Only raw TCP — the system-tunnel path.
+    Direct,
+}
+
+impl ProbeConfig {
+    /// Effective mode after "auto" resolution.
+    pub fn effective_via(&self) -> ProbeVia {
+        match self.via {
+            ProbeVia::Auto => {
+                if std::env::var_os("http_proxy").is_some()
+                    || std::env::var_os("https_proxy").is_some()
+                    || std::env::var_os("all_proxy").is_some()
+                {
+                    ProbeVia::Proxy
+                } else {
+                    ProbeVia::Direct
+                }
+            }
+            other => other,
+        }
+    }
+}
+
 impl Default for ProbeConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            via: ProbeVia::Auto,
             hosts: vec!["1.1.1.1:80".to_string(), "9.9.9.9:80".to_string()],
             distinguish_offline: true,
         }
@@ -317,6 +357,8 @@ pub struct SettingsOverride {
     /// Master switch: pause ALL freezing (a safety valve when something
     /// misbehaves); everything frozen resumes immediately.
     pub protection_paused: Option<bool>,
+    /// Which path the probe exercises: auto | proxy | direct.
+    pub probe_via: Option<String>,
 }
 
 /// Default config path: `$XDG_CONFIG_HOME/shuang/config.toml`, falling back to
@@ -375,6 +417,13 @@ impl Config {
         }
         if let Some(v) = state.settings.protection_paused {
             self.protection_paused = v;
+        }
+        if let Some(via) = state.settings.probe_via.as_deref() {
+            self.probe.via = match via {
+                "proxy" => ProbeVia::Proxy,
+                "direct" => ProbeVia::Direct,
+                _ => ProbeVia::Auto,
+            };
         }
         for mac in &state.trusted_networks {
             if !self.trusted_networks.contains(mac) {
