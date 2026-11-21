@@ -78,9 +78,10 @@ cargo fmt --all -- --check && cargo clippy --all-targets --locked -- -D warnings
   the sysinfo parent map; pids that vanish mid-scan are skipped (nothing to
   freeze). Processes that detached from the parent (daemonized) are out of
   scope for v0.1 — documented, not fixed.
-- **Resume exactly what was suspended.** Modes track suspended pids in a
-  `HashSet`; resume failures are ignored (the process may be gone), freeze
-  failures are simply not recorded. Never resume a pid you did not suspend.
+- **Resume exactly what was suspended.** Modes track PID plus process start
+  time and verify both before resume/kill. Persist the supervisor identity too:
+  recovery must leave records of live instances alone and wait for an allowed
+  IP verdict. Legacy records never signal a process.
 - **Windows is an explicit error, never a silent no-op** (`platform::imp`).
   0.2 brings `NtSuspendProcess` with the tray; until then every control call
   bails with "not implemented on Windows yet".
@@ -98,11 +99,11 @@ cargo fmt --all -- --check && cargo clippy --all-targets --locked -- -D warnings
   4 leaks/doctor-problems-found, 69 run-refused-at-start, 75
   run-stopped-mid-run. 69/75 mirror Kordon so scripts ported from it keep
   working.
-- **Clean exit and crash recovery are load-bearing.** Ctrl+C/SIGTERM resumes
-  everything frozen (`supervisor::Shutdown` + `Frozen::resume_all`); the
-  frozen pid set persists to `state.toml` on every change and
-  `Frozen::recover` resumes orphans at mode start. Any new freeze path must
-  go through `Frozen` (never raw `platform::suspend`) or recovery breaks.
+- **Clean exit and crash recovery are load-bearing.** On shutdown, the daemon
+  releases its own holds and `run` terminates its command. Every freeze path goes
+  through `Frozen` to journal each claim before signalling. A replacement
+  daemon releases orphaned claims only under the same policy after a stable
+  allowed verdict. The last claim controls resumption.
 - **The tray must never block or panic the runtime.** ksni's *blocking*
   facade calls `block_on` and panics inside tokio — always use the async API
   (`TrayHandle::spawn(...).await` / `.status(...).await`). A missing D-Bus
@@ -123,6 +124,11 @@ cargo fmt --all -- --check && cargo clippy --all-targets --locked -- -D warnings
 - **Per-app rules are additive unions** (`Allowlist::with_extra`): app rules
   only widen, never narrow, the global allowlist — a stricter app config is
   expressed by a stricter global/profile list, not by subtractive rules.
+- **Live state changes:** panel mutations wake the daemon through `Notify`;
+  the daemon cancels pending checks and reloads rules, apps, and probe settings
+  without a process restart.
+  State mutations use `config::update_state` so concurrent CLI/panel writes
+  cannot replace each other or corrupt `state.toml`.
 - **Property tests must keep passing** (`net.rs::properties`): allowed ⇔
   deny_reason is None; no quorum is never allowed; the allowlist is
   monotone; country allows are IP-agnostic. A failing property is a design

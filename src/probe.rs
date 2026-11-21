@@ -18,9 +18,9 @@ pub fn spawn_with_proxy(
     cfg: &crate::config::ProbeConfig,
     tx: UnboundedSender<()>,
     app_proxy: Option<String>,
-) {
+) -> Option<tokio::task::JoinHandle<()>> {
     if !cfg.enabled {
-        return;
+        return None;
     }
     let hosts = cfg.hosts.clone();
     let via = cfg.effective_via();
@@ -32,7 +32,7 @@ pub fn spawn_with_proxy(
             crate::config::ProbeVia::Auto => unreachable!("resolved at spawn"),
         }
     );
-    tokio::spawn(async move {
+    Some(tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let down = match via {
@@ -43,17 +43,18 @@ pub fn spawn_with_proxy(
                 return;
             }
         }
-    });
+    }))
 }
 
 /// The apps' path: an HTTP HEAD through the system proxy to each host.
 /// One healthy hop = transport alive.
 async fn proxy_down(hosts: &[String], explicit: Option<&str>) -> bool {
     let mut builder = reqwest::Client::builder().timeout(Duration::from_millis(1500));
-    if let Some(url) = explicit
-        && let Ok(p) = reqwest::Proxy::all(url)
-    {
-        builder = builder.proxy(p);
+    if let Some(url) = explicit {
+        let Ok(proxy) = reqwest::Proxy::all(url) else {
+            return true;
+        };
+        builder = builder.proxy(proxy);
     }
     let Ok(client) = builder.build() else {
         return false;

@@ -11,13 +11,13 @@ use ipnet::IpNet;
 use crate::config;
 
 pub fn run(config_path: &Path, value: &str) -> Result<u8> {
-    let mut state = config::load_state(config_path);
-
     if let Ok(ip) = IpAddr::from_str(value) {
-        if !state.allow.ips.contains(&ip) {
-            state.allow.ips.push(ip);
-        }
-        config::save_state(config_path, &state)?;
+        config::update_state(config_path, |state| {
+            if !state.allow.ips.contains(&ip) {
+                state.allow.ips.push(ip);
+            }
+            Ok(())
+        })?;
         println!(
             "Allowed IP {ip} ({})",
             config::state_path(config_path).display()
@@ -26,10 +26,12 @@ pub fn run(config_path: &Path, value: &str) -> Result<u8> {
     }
 
     if let Ok(net) = IpNet::from_str(value) {
-        if !state.allow.nets.contains(&net) {
-            state.allow.nets.push(net);
-        }
-        config::save_state(config_path, &state)?;
+        config::update_state(config_path, |state| {
+            if !state.allow.nets.contains(&net) {
+                state.allow.nets.push(net);
+            }
+            Ok(())
+        })?;
         println!(
             "Allowed subnet {net} ({})",
             config::state_path(config_path).display()
@@ -39,10 +41,12 @@ pub fn run(config_path: &Path, value: &str) -> Result<u8> {
 
     let country = value.trim().to_ascii_uppercase();
     if country.len() == 2 && country.chars().all(|c| c.is_ascii_alphabetic()) {
-        if !state.allow.countries.contains(&country) {
-            state.allow.countries.push(country.clone());
-        }
-        config::save_state(config_path, &state)?;
+        config::update_state(config_path, |state| {
+            if !state.allow.countries.contains(&country) {
+                state.allow.countries.push(country.clone());
+            }
+            Ok(())
+        })?;
         println!(
             "Allowed country {country} ({})",
             config::state_path(config_path).display()
@@ -56,26 +60,24 @@ pub fn run(config_path: &Path, value: &str) -> Result<u8> {
 /// Remove an allowlist entry from `state.toml` (the panel's "×" button).
 /// Mirrors the parse order of `run`: IP → subnet → country.
 pub fn remove(config_path: &Path, value: &str) -> Result<bool> {
-    let mut state = config::load_state(config_path);
-    let removed = if let Ok(ip) = IpAddr::from_str(value) {
-        let before = state.allow.ips.len();
-        state.allow.ips.retain(|i| *i != ip);
-        state.allow.ips.len() != before
-    } else if let Ok(net) = IpNet::from_str(value) {
-        let before = state.allow.nets.len();
-        state.allow.nets.retain(|n| *n != net);
-        state.allow.nets.len() != before
-    } else {
-        let country = value.trim().to_ascii_uppercase();
-        let before = state.allow.countries.len();
-        state.allow.countries.retain(|c| *c != country);
-        state.allow.countries.len() != before
-    };
-
-    if removed {
-        config::save_state(config_path, &state).context("cannot write state.toml")?;
-    }
-    Ok(removed)
+    config::update_state(config_path, |state| {
+        let removed = if let Ok(ip) = IpAddr::from_str(value) {
+            let before = state.allow.ips.len();
+            state.allow.ips.retain(|i| *i != ip);
+            state.allow.ips.len() != before
+        } else if let Ok(net) = IpNet::from_str(value) {
+            let before = state.allow.nets.len();
+            state.allow.nets.retain(|n| *n != net);
+            state.allow.nets.len() != before
+        } else {
+            let country = value.trim().to_ascii_uppercase();
+            let before = state.allow.countries.len();
+            state.allow.countries.retain(|c| *c != country);
+            state.allow.countries.len() != before
+        };
+        Ok(removed)
+    })
+    .context("cannot update state.toml")
 }
 
 #[cfg(test)]

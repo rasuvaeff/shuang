@@ -5,16 +5,17 @@
 //! The effective allowlist is the union of both.
 
 use std::{
-    fs,
+    fs::{self, OpenOptions},
     net::IpAddr,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result};
+use fs2::FileExt;
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields, default)]
 pub struct Config {
     /// Applications to protect in `daemon` mode.
@@ -64,6 +65,9 @@ impl Config {
     /// Warnings never block the run — they explain surprising behavior.
     pub fn warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
+        if self.ip_check.min_agree == 0 {
+            out.push("ip_check.min_agree must be at least 1".to_string());
+        }
         if self.ip_check.ip_services.is_empty() {
             out.push(
                 "ip_check.ip_services is empty: the external IP can never be confirmed \
@@ -171,11 +175,11 @@ pub struct TimingConfig {
     /// How long a frozen tree waits for the allowed IP to come back before it
     /// is stopped.
     pub grace_secs: u64,
-    /// How long the polite stop is awaited before a forced kill.
+    /// Additional time to keep the process frozen before a forced kill.
     pub close_secs: u64,
     /// Paranoid mode: a netlink/network event freezes FIRST, the IP check
-    /// runs after. Zero-leak window at the cost of half-second pauses on
-    /// harmless route changes.
+    /// runs after. This shortens the leak window, but only an OS-level
+    /// network kill switch can block packets before the event is delivered.
     pub freeze_on_event_first: bool,
     /// Stability gate: after a freeze, a good verdict must HOLD this long
     /// before the trees resume (0 = resume immediately). A flapping exit
@@ -327,7 +331,7 @@ pub struct State {
     /// Active profile name (set by `shuang profile <name>`), or None.
     pub active_profile: Option<String>,
     /// Pids left frozen by the current/previous run (crash recovery).
-    pub frozen: Vec<u32>,
+    pub frozen: Vec<FrozenEntry>,
     /// Panel-set overrides: applied on top of config.toml so the hand-written
     /// file is never rewritten.
     pub settings: SettingsOverride,
@@ -337,6 +341,22 @@ pub struct State {
     pub trusted_networks: Vec<String>,
     /// The running daemon's panel URL (with token), for `shuang panel`.
     pub panel_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FrozenEntry {
+    Owned {
+        pid: u32,
+        started_at: u64,
+        supervisor_pid: u32,
+        supervisor_started_at: u64,
+    },
+    Identified {
+        pid: u32,
+        started_at: u64,
+    },
+    Legacy(u32),
 }
 
 /// Per-setting overrides written by the panel; `None` = keep the config value.
@@ -474,21 +494,69 @@ pub fn load(config_path: &Path, explicit: bool) -> Result<Config> {
     Ok(cfg)
 }
 
-pub fn load_state(config_path: &Path) -> State {
+pub fn try_load_state(config_path: &Path) -> Result<State> {
     let path = state_path(config_path);
-    let Ok(raw) = fs::read_to_string(&path) else {
-        return State::default();
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(State::default()),
+        Err(err) => return Err(err).with_context(|| format!("cannot read {}", path.display())),
     };
-    toml::from_str(&raw).unwrap_or_default()
+    toml::from_str(&raw).with_context(|| format!("invalid state {}", path.display()))
 }
 
-pub fn save_state(config_path: &Path, state: &State) -> Result<()> {
+pub fn load_state(config_path: &Path) -> State {
+    try_load_state(config_path).unwrap_or_else(|err| {
+        eprintln!("shuang: {err:#}");
+        State::default()
+    })
+}
+
+pub fn update_state<T>(
+    config_path: &Path,
+    update: impl FnOnce(&mut State) -> Result<T>,
+) -> Result<T> {
     let path = state_path(config_path);
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    let dir = path.parent().context("state path has no parent")?;
+    fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    let _lock = lock_file(&dir.join("state.toml.lock"))?;
+    let mut state = try_load_state(config_path)?;
+    let before = toml::to_string_pretty(&state).context("cannot serialize state")?;
+    let result = update(&mut state)?;
+    if toml::to_string_pretty(&state).context("cannot serialize state")? != before {
+        save_state_unlocked(&path, &state)?;
     }
-    let raw = toml::to_string_pretty(state).context("cannot serialize state")?;
-    fs::write(&path, raw).with_context(|| format!("cannot write {}", path.display()))
+    Ok(result)
+}
+
+fn save_state_unlocked(path: &Path, state: &State) -> Result<()> {
+    write_atomic(
+        path,
+        &toml::to_string_pretty(state).context("cannot serialize state")?,
+    )
+}
+
+pub(crate) fn lock_file(path: &Path) -> Result<fs::File> {
+    let lock = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+        .with_context(|| format!("cannot open {}", path.display()))?;
+    FileExt::lock_exclusive(&lock).with_context(|| format!("cannot lock {}", path.display()))?;
+    Ok(lock)
+}
+
+pub(crate) fn write_atomic(path: &Path, raw: &str) -> Result<()> {
+    let dir = path.parent().context("state path has no parent")?;
+    let mut temp = tempfile::NamedTempFile::new_in(dir)
+        .with_context(|| format!("cannot create temporary state in {}", dir.display()))?;
+    use std::io::Write;
+    temp.write_all(raw.as_bytes())?;
+    temp.as_file().sync_all()?;
+    temp.persist(path)
+        .map_err(|err| err.error)
+        .with_context(|| format!("cannot replace {}", path.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -565,12 +633,47 @@ close_secs = 3
     fn state_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let cfg_path = dir.path().join("config.toml");
-        let mut state = State::default();
-        state.allow.ips.push("203.0.113.9".parse().unwrap());
-        state.allow.countries.push("NL".to_string());
-        save_state(&cfg_path, &state).unwrap();
+        update_state(&cfg_path, |state| {
+            state.allow.ips.push("203.0.113.9".parse().unwrap());
+            state.allow.countries.push("NL".to_string());
+            Ok(())
+        })
+        .unwrap();
         let loaded = load_state(&cfg_path);
-        assert_eq!(loaded.allow.ips, state.allow.ips);
+        assert_eq!(loaded.allow.ips, ["203.0.113.9".parse::<IpAddr>().unwrap()]);
         assert_eq!(loaded.allow.countries, ["NL"]);
+    }
+
+    #[test]
+    fn concurrent_updates_preserve_all_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("config.toml");
+        std::thread::scope(|scope| {
+            for n in 1..=16 {
+                let path = cfg_path.clone();
+                scope.spawn(move || {
+                    update_state(&path, |state| {
+                        state
+                            .allow
+                            .ips
+                            .push(format!("203.0.113.{n}").parse().unwrap());
+                        Ok(())
+                    })
+                    .unwrap();
+                });
+            }
+        });
+        assert_eq!(try_load_state(&cfg_path).unwrap().allow.ips.len(), 16);
+    }
+
+    #[test]
+    fn invalid_state_is_rejected_without_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("config.toml");
+        let state_path = state_path(&cfg_path);
+        fs::write(&state_path, "not = [valid").unwrap();
+        assert!(try_load_state(&cfg_path).is_err());
+        assert!(update_state(&cfg_path, |_| Ok(())).is_err());
+        assert_eq!(fs::read_to_string(state_path).unwrap(), "not = [valid");
     }
 }

@@ -11,7 +11,7 @@ use crate::config;
 
 pub fn run(config_path: &Path, name: &Option<String>) -> Result<u8> {
     let cfg = config::load(config_path, false)?;
-    let mut state = config::load_state(config_path);
+    let state = config::try_load_state(config_path)?;
 
     match name {
         None => {
@@ -37,8 +37,11 @@ pub fn run(config_path: &Path, name: &Option<String>) -> Result<u8> {
             Ok(0)
         }
         Some(name) if name == "none" => {
-            state.active_profile = None;
-            config::save_state(config_path, &state).context("cannot write state.toml")?;
+            config::update_state(config_path, |state| {
+                state.active_profile = None;
+                Ok(())
+            })
+            .context("cannot write state.toml")?;
             println!("Profile deactivated");
             Ok(0)
         }
@@ -46,8 +49,11 @@ pub fn run(config_path: &Path, name: &Option<String>) -> Result<u8> {
             if !cfg.profiles.contains_key(name) {
                 bail!("profile {name:?} is not defined in config.toml ([profiles.{name}])");
             }
-            state.active_profile = Some(name.clone());
-            config::save_state(config_path, &state).context("cannot write state.toml")?;
+            config::update_state(config_path, |state| {
+                state.active_profile = Some(name.clone());
+                Ok(())
+            })
+            .context("cannot write state.toml")?;
             println!("Active profile: {name}");
             Ok(0)
         }

@@ -44,6 +44,10 @@ impl Guard {
         }
     }
 
+    pub fn set_grace(&mut self, grace: Duration) {
+        self.grace = grace;
+    }
+
     /// Test helper: pretend the freeze happened `ago` ago (on the injected
     /// clock this is exact, unlike rewinding the real one).
     #[cfg(test)]
@@ -64,6 +68,24 @@ impl Guard {
     #[cfg(not(test))]
     fn now(&self) -> Duration {
         mono::now()
+    }
+
+    /// Discard the old stability window after a policy change.
+    pub fn reset_stability(&mut self) {
+        self.stable_since = None;
+    }
+
+    /// Includes startup, when the journal may hold a previous daemon's
+    /// claims even though this guard has not frozen anything itself.
+    pub fn policy_stable(&mut self, stability: Duration) -> bool {
+        let now = self.now();
+        let since = *self.stable_since.get_or_insert(now);
+        if now.saturating_sub(since) >= stability {
+            self.frozen_since = None;
+            true
+        } else {
+            false
+        }
     }
 
     /// The verdict turned good. Returns `true` when a frozen tree must be
@@ -97,13 +119,13 @@ impl Guard {
 
     /// The verdict turned bad. Never panics, never sleeps.
     pub fn bad(&mut self) -> Stage {
+        self.reset_stability();
         match self.frozen_since {
             None => {
                 self.frozen_since = Some(self.now());
                 Stage::Freeze
             }
             Some(since) => {
-                self.stable_since = None;
                 let elapsed = self.now().saturating_sub(since);
                 if elapsed >= self.grace {
                     Stage::MustClose
@@ -124,6 +146,20 @@ impl Guard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_requires_stability_even_before_the_first_freeze() {
+        let mut guard = Guard::new(Duration::ZERO);
+        guard.clock = || Duration::from_secs(1);
+        let stability = Duration::from_secs(2);
+        assert!(!guard.policy_stable(stability));
+        guard.clock = || Duration::from_secs(2);
+        assert_eq!(guard.bad(), Stage::Freeze);
+        guard.clock = || Duration::from_secs(3);
+        assert!(!guard.policy_stable(stability));
+        guard.clock = || Duration::from_secs(5);
+        assert!(guard.policy_stable(stability));
+    }
 
     #[test]
     fn freeze_then_resume_within_grace() {

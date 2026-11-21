@@ -15,8 +15,18 @@ curl -fsSL https://raw.githubusercontent.com/rasuvaeff/shuang/master/scripts/ins
 - Fail-closed: unknown IP (no quorum) is never allowed.
 - The whole process tree is frozen (SIGSTOP / NtSuspendProcess), not just the root pid.
 - The config file is never rewritten: `shuang allow` and profile selection write `state.toml`.
-- Ctrl+C/SIGTERM resumes everything frozen; frozen pids persist for crash recovery.
-- No network traffic except the configured IP/country checks (leaks also asks ip-api.com for reputation).
+- The per-user frozen.toml journal records claims before suspension. The daemon
+  releases its holds on clean exit. Orphans require the same daemon policy and
+  an allowed verdict for stability_secs. Legacy and run-mode orphans need manual
+  inspection. run stops its command and frozen descendants on clean exit.
+- Frozen commands stay suspended through grace_secs and close_secs and are
+  then force-killed if the verdict is still denied.
+- Panel edits and Apply now interrupt checks and reload config.toml. Route
+  checks apply when any protected app's effective allowlist permits the exit.
+- IPv6 must match an allowed IP/subnet; an IPv4 country result cannot allow IPv6.
+- State writes are locked and atomically replaced; malformed state fails closed.
+- Network checks contact configured IP/country services; optional route checks
+  contact AI edges, and leaks/reputation checks contact diagnostic services.
 
 ## API
 
@@ -38,6 +48,7 @@ shuang fix <disable-ipv6|enable-ipv6|dns-public>  # close a leak (or print the s
 # leak fixes, and settings (interval/grace/close/min_agree/notify,
 # trust-this-network). Panel writes go to state.toml; config.toml is never
 # rewritten. Settings in state.toml override config values on load.
+# Apply now reloads config.toml without restarting the daemon.
 ```
 
 `check --json` shape (public contract, additive only):

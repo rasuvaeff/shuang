@@ -83,10 +83,11 @@ struct CountryReply {
 pub async fn check(cfg: &IpCheckConfig) -> Verdict {
     let mut builder =
         reqwest::Client::builder().timeout(Duration::from_secs(cfg.timeout_secs.max(1)));
-    if let Some(url) = &cfg.proxy
-        && let Ok(p) = reqwest::Proxy::all(url)
-    {
-        builder = builder.proxy(p);
+    if let Some(url) = &cfg.proxy {
+        let Ok(proxy) = reqwest::Proxy::all(url) else {
+            return Verdict::default();
+        };
+        builder = builder.proxy(proxy);
     }
     let client = match builder.build() {
         Ok(client) => client,
@@ -223,6 +224,15 @@ mod tests {
         let (ip, ok) = resolve(vec![ip6], 1);
         assert_eq!(ip, Some(ip6));
         assert!(ok);
+    }
+
+    #[tokio::test]
+    async fn invalid_explicit_proxy_is_unknown() {
+        let cfg = IpCheckConfig {
+            proxy: Some("://bad".to_string()),
+            ..IpCheckConfig::default()
+        };
+        assert_eq!(check(&cfg).await, Verdict::default());
     }
 
     #[test]

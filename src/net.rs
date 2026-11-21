@@ -115,8 +115,10 @@ pub fn allowed(verdict: &Verdict, list: &Allowlist) -> bool {
     if !one_allowed(v4, verdict.country.as_deref(), list) {
         return false;
     }
+    // The country answer belongs to the IPv4 check. Applying it to IPv6
+    // could allow a direct IPv6 route outside the tunnel.
     if let Some(v6) = verdict.ipv6
-        && !one_allowed(v6, verdict.country.as_deref(), list)
+        && !list.allows_ip(v6)
     {
         return false;
     }
@@ -192,7 +194,7 @@ pub fn deny_reason(verdict: &Verdict, list: &Allowlist) -> Option<DenyReason> {
         });
     }
     if let Some(v6) = verdict.ipv6
-        && !one_allowed(v6, verdict.country.as_deref(), list)
+        && !list.allows_ip(v6)
     {
         return Some(DenyReason::Ipv6Leak { v4, v6 });
     }
@@ -276,11 +278,13 @@ mod tests {
         let list = list_with(&[], &["185.12.40.0/24"], &[]);
         let leak = verdict(Some("185.12.40.1"), Some("2001:db8::1"), None);
         assert!(!allowed(&leak, &list));
-        // Same verdict, IPv6 inside the allowed country → allowed.
+        // The IPv4 country cannot establish where the IPv6 route exits.
         let mut ok = leak.clone();
         ok.country = Some("NL".to_string());
         let list_nl = list_with(&[], &["185.12.40.0/24"], &["NL"]);
-        assert!(allowed(&ok, &list_nl));
+        assert!(!allowed(&ok, &list_nl));
+        let list_v6 = list_with(&[], &["185.12.40.0/24", "2001:db8::/64"], &["NL"]);
+        assert!(allowed(&ok, &list_v6));
     }
 
     #[test]

@@ -108,8 +108,7 @@ async fn main() -> ExitCode {
         cli::Command::Profile { name } => profile::run(&path, &name),
         cli::Command::Stats { tail } => stats::run(&path, tail),
         cli::Command::Panel => {
-            let state = config::load_state(&path);
-            match state.panel_url {
+            config::try_load_state(&path).and_then(|state| match state.panel_url {
                 Some(url) => match gui::run(&url) {
                     Ok(()) => Ok(0),
                     Err(err) => Err(err),
@@ -117,7 +116,7 @@ async fn main() -> ExitCode {
                 None => Err(anyhow::anyhow!(
                     "no panel URL in state.toml — is the daemon running?"
                 )),
-            }
+            })
         }
         cli::Command::Update => update::run().await,
         cli::Command::Doctor => doctor::run(&path, explicit).await,

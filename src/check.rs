@@ -5,15 +5,18 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 
-use crate::{config, ipcheck, net, net::Allowlist};
+use crate::{config, ipcheck, net};
 
 pub async fn run(config_path: &Path, json: bool, explicit: bool) -> Result<u8> {
     let mut cfg = config::load(config_path, explicit)?;
-    let state = config::load_state(config_path);
+    let state = config::try_load_state(config_path)?;
     cfg.apply_overrides(&state);
-    let list = Allowlist::merged(&cfg.allow, &state.allow);
+    if cfg.ip_check.min_agree == 0 {
+        bail!("ip_check.min_agree must be at least 1");
+    }
+    let (list, _) = net::effective(&cfg, &state);
     let verdict = ipcheck::check(&cfg.ip_check).await;
     let allowed = net::allowed(&verdict, &list);
 

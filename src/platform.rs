@@ -27,10 +27,6 @@ mod imp {
         send(pid, Signal::SIGCONT)
     }
 
-    pub fn terminate(pid: u32) -> Result<()> {
-        send(pid, Signal::SIGTERM)
-    }
-
     pub fn kill(pid: u32) -> Result<()> {
         send(pid, Signal::SIGKILL)
     }
@@ -114,7 +110,7 @@ mod imp {
         }
     }
 
-    pub fn terminate(pid: u32) -> Result<()> {
+    pub fn kill(pid: u32) -> Result<()> {
         let ok = with_handle(pid, PROCESS_TERMINATE, |h| {
             Some(unsafe { terminate_process_thunk(h) } != 0)
         });
@@ -123,10 +119,6 @@ mod imp {
         } else {
             bail!("TerminateProcess({pid}) failed")
         }
-    }
-
-    pub fn kill(pid: u32) -> Result<()> {
-        terminate(pid)
     }
 
     unsafe fn terminate_process_thunk(handle: HANDLE) -> i32 {
@@ -149,10 +141,6 @@ pub fn suspend(pid: u32) -> Result<()> {
 
 pub fn resume(pid: u32) -> Result<()> {
     imp::resume(pid)
-}
-
-pub fn terminate(pid: u32) -> Result<()> {
-    imp::terminate(pid)
 }
 
 pub fn kill(pid: u32) -> Result<()> {

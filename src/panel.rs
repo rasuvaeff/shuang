@@ -48,7 +48,13 @@ pub struct Panel {
 }
 
 /// Bind and spawn the panel. Returns the URL with the token.
-pub async fn spawn(shared: Shared, config_path: PathBuf, no_panel: bool) -> Option<Panel> {
+pub async fn spawn(
+    shared: Shared,
+    config_path: PathBuf,
+    no_panel: bool,
+    apply: Arc<tokio::sync::Notify>,
+    explicit: bool,
+) -> Option<Panel> {
     if no_panel {
         return None;
     }
@@ -65,6 +71,7 @@ pub async fn spawn(shared: Shared, config_path: PathBuf, no_panel: bool) -> Opti
         .route("/api/stats", get(run_stats))
         .route("/api/fix", post(run_fix))
         .route("/api/settings", get(get_settings).post(post_settings))
+        .route("/api/apply", post(apply_now))
         .route("/api/trust-network", post(trust_network))
         .route("/api/apps", get(get_apps).post(post_app).delete(delete_app))
         .route("/api/processes", get(list_processes))
@@ -72,6 +79,8 @@ pub async fn spawn(shared: Shared, config_path: PathBuf, no_panel: bool) -> Opti
             shared,
             token: token.clone(),
             config_path: config_path.clone(),
+            apply,
+            explicit,
         });
 
     let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
@@ -98,9 +107,10 @@ pub async fn spawn(shared: Shared, config_path: PathBuf, no_panel: bool) -> Opti
     let url = format!("http://127.0.0.1:{port}/?token={token}");
     // Persist for `shuang panel` (the GUI window process) and the tray.
     {
-        let mut state = config::load_state(&config_path.clone());
-        state.panel_url = Some(url.clone());
-        let _ = config::save_state(&config_path, &state);
+        let _ = config::update_state(&config_path, |state| {
+            state.panel_url = Some(url.clone());
+            Ok(())
+        });
     }
     Some(Panel { url, quit })
 }
@@ -110,6 +120,27 @@ struct AppState {
     shared: Shared,
     token: String,
     config_path: PathBuf,
+    apply: Arc<tokio::sync::Notify>,
+    explicit: bool,
+}
+
+async fn apply_now(State(app): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if !app.authorized("", &headers) {
+        return (StatusCode::FORBIDDEN, "forbidden".to_string());
+    }
+    let config = config::load(&app.config_path, app.explicit).and_then(|mut cfg| {
+        let state = config::try_load_state(&app.config_path)?;
+        cfg.apply_overrides(&state);
+        if cfg.ip_check.interval_secs == 0 || cfg.ip_check.min_agree == 0 {
+            anyhow::bail!("interval_secs and min_agree must be at least 1");
+        }
+        Ok(())
+    });
+    if let Err(err) = config {
+        return (StatusCode::BAD_REQUEST, format!("{err:#}"));
+    }
+    app.apply.notify_one();
+    (StatusCode::OK, "applying rules".to_string())
 }
 
 impl AppState {
@@ -338,58 +369,66 @@ async fn post_settings(
     // Validation happens on load (`apply_overrides` runs before the
     // interval check), but guard the obvious nonsense here for a friendly
     // error.
-    if parsed.interval_secs == Some(0) {
-        return (StatusCode::BAD_REQUEST, "interval_secs must be at least 1").into_response();
+    if parsed.interval_secs == Some(0) || parsed.min_agree == Some(0) {
+        return (
+            StatusCode::BAD_REQUEST,
+            "interval_secs and min_agree must be at least 1",
+        )
+            .into_response();
     }
-    let mut state = config::load_state(&app.config_path);
-    let s = &mut state.settings;
-    if parsed.interval_secs.is_some() {
-        s.interval_secs = parsed.interval_secs;
-    }
-    if parsed.grace_secs.is_some() {
-        s.grace_secs = parsed.grace_secs;
-    }
-    if parsed.close_secs.is_some() {
-        s.close_secs = parsed.close_secs;
-    }
-    if parsed.min_agree.is_some() {
-        s.min_agree = parsed.min_agree;
-    }
-    if parsed.notify.is_some() {
-        s.notify = parsed.notify;
-    }
-    if parsed.freeze_on_event_first.is_some() {
-        s.freeze_on_event_first = parsed.freeze_on_event_first;
-    }
-    if let Some(patterns) = parsed.watchdog_processes {
-        s.watchdog_processes = Some(
-            patterns
-                .iter()
-                .map(|p| p.trim().to_string())
-                .filter(|p| !p.is_empty())
-                .collect(),
-        );
-    }
-    if parsed.reputation_enabled.is_some() {
-        s.reputation_enabled = parsed.reputation_enabled;
-    }
-    if parsed.stability_secs.is_some() {
-        s.stability_secs = parsed.stability_secs;
-    }
-    if parsed.probe_enabled.is_some() {
-        s.probe_enabled = parsed.probe_enabled;
-    }
-    if parsed.protection_paused.is_some() {
-        s.protection_paused = parsed.protection_paused;
-    }
-    if let Some(via) = parsed.probe_via.as_deref()
-        && matches!(via, "auto" | "proxy" | "direct")
-    {
-        s.probe_via = Some(via.to_string());
-    }
-    s.app_proxy = parsed.app_proxy;
-    match config::save_state(&app.config_path, &state) {
-        Ok(()) => (StatusCode::OK, "saved — restart the daemon to apply").into_response(),
+    match config::update_state(&app.config_path, |state| {
+        let s = &mut state.settings;
+        if parsed.interval_secs.is_some() {
+            s.interval_secs = parsed.interval_secs;
+        }
+        if parsed.grace_secs.is_some() {
+            s.grace_secs = parsed.grace_secs;
+        }
+        if parsed.close_secs.is_some() {
+            s.close_secs = parsed.close_secs;
+        }
+        if parsed.min_agree.is_some() {
+            s.min_agree = parsed.min_agree;
+        }
+        if parsed.notify.is_some() {
+            s.notify = parsed.notify;
+        }
+        if parsed.freeze_on_event_first.is_some() {
+            s.freeze_on_event_first = parsed.freeze_on_event_first;
+        }
+        if let Some(patterns) = parsed.watchdog_processes {
+            s.watchdog_processes = Some(
+                patterns
+                    .iter()
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty())
+                    .collect(),
+            );
+        }
+        if parsed.reputation_enabled.is_some() {
+            s.reputation_enabled = parsed.reputation_enabled;
+        }
+        if parsed.stability_secs.is_some() {
+            s.stability_secs = parsed.stability_secs;
+        }
+        if parsed.probe_enabled.is_some() {
+            s.probe_enabled = parsed.probe_enabled;
+        }
+        if parsed.protection_paused.is_some() {
+            s.protection_paused = parsed.protection_paused;
+        }
+        if let Some(via) = parsed.probe_via.as_deref()
+            && matches!(via, "auto" | "proxy" | "direct")
+        {
+            s.probe_via = Some(via.to_string());
+        }
+        s.app_proxy = parsed.app_proxy;
+        Ok(())
+    }) {
+        Ok(()) => {
+            app.apply.notify_one();
+            (StatusCode::OK, "saved and applying").into_response()
+        }
         Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
     }
 }
@@ -405,12 +444,16 @@ async fn trust_network(State(app): State<AppState>, headers: HeaderMap) -> impl 
         )
             .into_response();
     };
-    let mut state = config::load_state(&app.config_path);
-    if !state.trusted_networks.contains(&mac) {
-        state.trusted_networks.push(mac.clone());
-    }
-    match config::save_state(&app.config_path, &state) {
-        Ok(()) => (StatusCode::OK, format!("trusted: {mac}")).into_response(),
+    match config::update_state(&app.config_path, |state| {
+        if !state.trusted_networks.contains(&mac) {
+            state.trusted_networks.push(mac.clone());
+        }
+        Ok(())
+    }) {
+        Ok(()) => {
+            app.apply.notify_one();
+            (StatusCode::OK, format!("trusted: {mac}")).into_response()
+        }
         Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
     }
 }
@@ -427,8 +470,9 @@ async fn get_apps(
         )
             .into_response();
     }
-    let cfg = config::load(&app.config_path, false).unwrap_or_default();
+    let mut cfg = config::load(&app.config_path, false).unwrap_or_default();
     let state = config::load_state(&app.config_path);
+    cfg.apply_overrides(&state);
     let state_names: Vec<&str> = state.apps.iter().map(|a| a.name.as_str()).collect();
     let apps: Vec<serde_json::Value> = cfg
         .apps
@@ -474,18 +518,22 @@ async fn post_app(
         )
             .into_response();
     }
-    let mut state = config::load_state(&app.config_path);
     let app_spec = config::AppSpec {
         name: parsed.name.trim().to_string(),
         r#match: parsed.matches,
         allow: parsed.allow,
     };
-    match state.apps.iter().position(|a| a.name == app_spec.name) {
-        Some(i) => state.apps[i] = app_spec,
-        None => state.apps.push(app_spec),
-    }
-    match config::save_state(&app.config_path, &state) {
-        Ok(()) => (StatusCode::OK, "saved — restart the daemon to apply").into_response(),
+    match config::update_state(&app.config_path, |state| {
+        match state.apps.iter().position(|a| a.name == app_spec.name) {
+            Some(i) => state.apps[i] = app_spec,
+            None => state.apps.push(app_spec),
+        }
+        Ok(())
+    }) {
+        Ok(()) => {
+            app.apply.notify_one();
+            (StatusCode::OK, "saved and applying").into_response()
+        }
         Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
     }
 }
@@ -506,14 +554,17 @@ async fn delete_app(
         .find(|(k, _)| *k == "name")
         .map(|(_, v)| v.replace("%20", " "))
         .unwrap_or_default();
-    let mut state = config::load_state(&app.config_path);
-    let before = state.apps.len();
-    state.apps.retain(|a| a.name != name);
-    if state.apps.len() == before {
-        return (StatusCode::NOT_FOUND, "not a panel-managed app").into_response();
-    }
-    match config::save_state(&app.config_path, &state) {
-        Ok(()) => (StatusCode::OK, "removed".to_string()).into_response(),
+    let removed = config::update_state(&app.config_path, |state| {
+        let before = state.apps.len();
+        state.apps.retain(|a| a.name != name);
+        Ok(state.apps.len() != before)
+    });
+    match removed {
+        Ok(true) => {
+            app.apply.notify_one();
+            (StatusCode::OK, "removed".to_string()).into_response()
+        }
+        Ok(false) => (StatusCode::NOT_FOUND, "not a panel-managed app").into_response(),
         Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
     }
 }
@@ -576,7 +627,10 @@ async fn add_allow(
         return (StatusCode::BAD_REQUEST, "bad json").into_response();
     };
     match allow::run(&app.config_path, &parsed.value) {
-        Ok(_) => (StatusCode::OK, format!("allowed {}", parsed.value)).into_response(),
+        Ok(_) => {
+            app.apply.notify_one();
+            (StatusCode::OK, format!("allowed {}", parsed.value)).into_response()
+        }
         Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
     }
 }
@@ -594,7 +648,10 @@ async fn remove_allow(
     };
     let value = percent_decode(parsed.value.trim());
     match allow::remove(&app.config_path, &value) {
-        Ok(true) => (StatusCode::OK, "removed".to_string()).into_response(),
+        Ok(true) => {
+            app.apply.notify_one();
+            (StatusCode::OK, "removed".to_string()).into_response()
+        }
         Ok(false) => (StatusCode::NOT_FOUND, "not found".to_string()).into_response(),
         Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
     }
@@ -616,13 +673,12 @@ async fn set_profile(
     let Ok(parsed) = serde_json::from_str::<ProfileBody>(&body) else {
         return (StatusCode::BAD_REQUEST, "bad json").into_response();
     };
-    let name = if parsed.name == "none" {
-        None
-    } else {
-        Some(parsed.name)
-    };
+    let name = Some(parsed.name);
     match profile::run(&app.config_path, &name) {
-        Ok(_) => (StatusCode::OK, "ok".to_string()).into_response(),
+        Ok(_) => {
+            app.apply.notify_one();
+            (StatusCode::OK, "ok".to_string()).into_response()
+        }
         Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
     }
 }
@@ -682,14 +738,15 @@ const PAGE_HTML: &str = r#"<!doctype html>
   <button onclick="setLang('ru')">RU</button>
   <button onclick="setLang('en')">EN</button></div>
 <div class="card" id="status">loading…</div>
+<div class="card"><strong>Running</strong><ul id="running"></ul></div>
 <div class="card"><strong>Protected apps</strong><ul id="apps"></ul>
   <form id="addapp"><input type="text" id="appname" placeholder="name (e.g. claude-code)">
   <input type="text" id="appmatch" placeholder="match pattern (e.g. claude)">
-  <input type="text" id="appcountries" placeholder="only from countries (e.g. NL,DE) — optional">
+  <input type="text" id="appcountries" placeholder="also allow countries (e.g. NL,DE) — optional">
   <button>Add</button></form>
   <div style="margin-top:.5rem"><select id="procpick"></select>
   <button onclick="pickProcess()">Add from running processes</button></div>
-  <div class="muted">Panel-added apps live in state.toml; [[apps]] in config.toml still applies. Restart the daemon to apply changes.</div></div>
+  <div class="muted">Panel-added apps live in state.toml; changes apply immediately.</div></div>
 <div class="card"><strong>Allowed</strong>
   <ul id="allow"></ul>
   <form id="add"><input type="text" id="value" placeholder="IP, subnet (1.2.3.0/24), or country (NL)">
@@ -720,6 +777,7 @@ const PAGE_HTML: &str = r#"<!doctype html>
   <div class="muted" style="margin-top:.4rem" id="helpbox"></div></details>
   <div style="margin-top:.5rem"><label><input type="checkbox" id="s_paused"> ⏸ PROTECTION PAUSED (no freezing at all)</label></div>
   <div style="margin-top:.6rem"><button onclick="saveSettings()">Save settings</button>
+       <button onclick="applyNow()">Apply now</button>
        <button onclick="trustNetwork()">Trust this network</button>
        <span class="muted" id="trusted_macs"></span></div></div>
 <div class="card"><strong>Leak report</strong>
@@ -735,6 +793,7 @@ const token = new URLSearchParams(location.search).get('token');
 const I18N = {
   ru: {
     'Protected apps': 'Защищаемые приложения',
+    'Running': 'Запущены',
     'Settings': 'Настройки',
     'Leak report': 'Утечки',
     'Diagnostics': 'Диагностика',
@@ -742,11 +801,11 @@ const I18N = {
     'Recent events': 'События',
     'name (e.g. claude-code)': 'имя (напр. claude-code)',
     'match pattern (e.g. claude)': 'паттерн (напр. claude)',
-    'only from countries (e.g. NL,DE) — optional': 'только из стран (напр. NL,DE) — необязательно',
+    'also allow countries (e.g. NL,DE) — optional': 'дополнительно разрешить страны (напр. NL,DE)',
     'Add': 'Добавить',
     'Add from running processes': 'Добавить из запущенных процессов',
-    'Panel-added apps live in state.toml; [[apps]] in config.toml still applies. Restart the daemon to apply changes.':
-      'Приложения из панели живут в state.toml; [[apps]] из config.toml тоже действует. Изменения — после перезапуска демона.',
+    'Panel-added apps live in state.toml; changes apply immediately.':
+      'Приложения из панели живут в state.toml; изменения применяются сразу.',
     'none running': 'ничего не запущено',
     'none': 'нет',
     's ·': 'с ·',
@@ -763,11 +822,12 @@ const I18N = {
     'quorum': 'кворум',
     'stability gate': 'гейт стабильности',
     'Save settings': 'Сохранить настройки',
+    'Apply now': 'Применить сейчас',
     'Trust this network': 'Доверять этой сети',
     'Run checks': 'Проверить',
     'Run doctor': 'Диагностика',
     'Refresh': 'Обновить',
-    'saved — restart the daemon to apply': 'сохранено — перезапустите демона',
+    'saved and applying': 'сохранено и применяется',
     'IP, subnet (1.2.3.0/24), or country (NL)': 'IP, подсеть (1.2.3.0/24) или страна (NL)',
     'Allowed': 'Разрешено',
     'no events yet': 'событий пока нет',
@@ -783,10 +843,10 @@ function t(s) { return (I18N[LANG] && I18N[LANG][s]) || s; }
 function setLang(l) { LANG = l; localStorage.setItem('shuang-lang', l); applyI18n(); }
 const HELP = {
   en: `<b>interval</b> — how often the external IP is re-checked (seconds). 5 is a good default.<br>
-<b>grace / close</b> — when the IP goes bad the app is frozen; grace is how long we wait for the good IP to return before stopping the app (close = polite-stop timeout).<br>
+<b>grace / close</b> — when the IP goes bad the app is frozen; grace and close together set how long it stays frozen before a forced stop.<br>
 <b>quorum</b> — how many IP services must agree on the address. Fewer agreeing = "unknown", and unknown is never allowed.<br>
 <b>desktop notifications</b> — popups about freezes/recoveries.<br>
-<b>paranoid</b> — freeze FIRST on any network change, verify after. Zero leak window, tiny pauses.<br>
+<b>paranoid</b> — freeze on a detected network change before re-checking. A network-level kill switch is still needed to block the first packet.<br>
 <b>reputation guard</b> — freeze while the exit IP is flagged as proxy/datacenter.<br>
 <b>fast probe</b> — a 1-second health ping; freezes the instant the transport dies (instead of waiting for IP-check timeouts).<br>
 <b>probe path</b> — which route the probe tests: "proxy only" = the exact route your apps use (recommended when they go via a local proxy).<br>
@@ -795,10 +855,10 @@ const HELP = {
 <b>watchdog</b> — names of your proxy-client processes; if that process dies, everything freezes instantly.<br>
 <b>PROTECTION PAUSED</b> — the big red button: no freezing at all, everything resumes. Use when something misbehaves.`,
   ru: `<b>интервал</b> — как часто перепроверяется внешний IP (в секундах). 5 — нормальное значение по умолчанию.<br>
-<b>grace / close</b> — при плохом IP приложение замораживается; grace — сколько секунд ждать возвращения правильного IP перед остановкой (close — таймаут «вежливого» закрытия).<br>
+<b>grace / close</b> — при плохом IP приложение замораживается; grace и close вместе задают время заморозки до принудительного завершения.<br>
 <b>кворум</b> — сколько IP-сервисов должны сойться на адресе. Меньше — «неизвестно», а неизвестное никогда не разрешается.<br>
 <b>уведомления</b> — всплывающие сообщения о заморозках и восстановлении.<br>
-<b>паранойя</b> — при любом изменении сети сначала заморозить, потом проверять. Нулевое окно утечки, ценой микро-пауз.<br>
+<b>паранойя</b> — при обнаруженном изменении сети сначала заморозить, потом проверять. Первый пакет блокирует только сетевой kill switch.<br>
 <b>репутация</b> — заморозка, пока выходной IP помечен как прокси/датацентр.<br>
 <b>быстрый зонд</b> — проверка здоровья раз в секунду; мгновенная заморозка при смерти транспорта (не ждём таймауты IP-проверок).<br>
 <b>путь зонда</b> — какой маршрут проверять: «proxy only» = ровно тот путь, которым ходят ваши приложения (рекомендуется при локальном прокси).<br>
@@ -838,7 +898,7 @@ async function refresh() {
     st.innerHTML = `<div class="ip">${s.ipv4 || 'unknown'} <span class="muted">(${s.country || '??'})</span></div>`
       + `<div>${s.ipv6 ? 'IPv6: ' + s.ipv6 + '<br>' : ''}`
       + `quorum: ${s.quorum ? 'yes' : 'NO'} · ${verdict}${s.frozen ? ' · frozen: ' + s.frozen + ' process(es)' : ''}</div>`;
-    document.getElementById('apps').innerHTML =
+    document.getElementById('running').innerHTML =
       (s.apps || []).map(a => `<li>${a}</li>`).join('') || '<li class="muted">none running</li>';
     const entries = [...(s.state_ips||[]).map(v=>['ip',v]), ...(s.state_nets||[]).map(v=>['net',v]),
                      ...(s.state_countries||[]).map(v=>['country',v])];
@@ -929,11 +989,16 @@ async function saveSettings() {
     body: JSON.stringify(body) });
   alert(await r.text());
 }
+async function applyNow() {
+  const r = await fetch('/api/apply', { method: 'POST', headers: H });
+  alert(await r.text());
+  refresh();
+}
 async function loadApps() {
   const r = await (await fetch('/api/apps', { headers: H })).json();
   const ul = document.getElementById('apps');
   ul.innerHTML = (r.apps || []).map(a =>
-    `<li><span>${a.name} <span class="muted">${a.match.join(', ')}${(a.countries||[]).length ? ' · only ' + a.countries.join(',') : ''} (${a.source})</span></span>` +
+    `<li><span>${a.name} <span class="muted">${a.match.join(', ')}${(a.countries||[]).length ? ' · also ' + a.countries.join(',') : ''} (${a.source})</span></span>` +
     (a.source === 'panel' ? `<button onclick="delApp('${a.name}')">×</button>` : '') +
     `</li>`).join('') || '<li class="muted">none</li>';
   const p = await (await fetch('/api/processes', { headers: H })).json();
@@ -1001,6 +1066,8 @@ mod tests {
             shared: shared(),
             token: "secret".to_string(),
             config_path,
+            apply: Arc::new(tokio::sync::Notify::new()),
+            explicit: false,
         };
         let app = Router::new()
             .route("/", get(index))
@@ -1049,5 +1116,35 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK, "api/status");
         let body = body_string(resp.into_body()).await;
         assert!(body.contains("\"state_ips\""), "{body}");
+    }
+
+    #[tokio::test]
+    async fn apply_button_wakes_the_daemon() {
+        let apply = Arc::new(tokio::sync::Notify::new());
+        let state = AppState {
+            shared: shared(),
+            token: "secret".to_string(),
+            config_path: PathBuf::new(),
+            apply: Arc::clone(&apply),
+            explicit: false,
+        };
+        let app = Router::new()
+            .route("/api/apply", post(apply_now))
+            .with_state(state);
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/apply")
+                    .header("x-shuang-token", "secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        tokio::time::timeout(std::time::Duration::from_millis(50), apply.notified())
+            .await
+            .unwrap();
     }
 }

@@ -29,7 +29,13 @@ pub async fn check(config_path: &Path, explicit: bool) -> (Vec<(bool, String)>, 
     };
 
     // 2. State merges.
-    let state = config::load_state(config_path);
+    let state = match config::try_load_state(config_path) {
+        Ok(state) => state,
+        Err(err) => {
+            checks.push((false, format!("state.toml readable: {err:#}")));
+            return (checks, problems);
+        }
+    };
     if !state.frozen.is_empty() {
         problems.push(format!(
             "state.toml lists {} pid(s) as frozen — the next run/daemon start resumes them",
