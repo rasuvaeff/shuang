@@ -12,6 +12,7 @@
 use anyhow::Result;
 
 pub fn run(url: &str) -> Result<()> {
+    kill_stale_instances();
     run_webview(url).or_else(|err| {
         eprintln!("shuang: native window unavailable ({err:#}) — opening the browser");
         crate::tray::open_url(url);
@@ -20,6 +21,45 @@ pub fn run(url: &str) -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
+/// Kill every other `shuang panel` process first: a stale window from an
+/// earlier session must never block a fresh open (the "closed once, never
+/// opens again" bug, 2026-11-21).
+fn kill_stale_instances() {
+    let me = std::process::id();
+    let own_exe = std::env::current_exe().ok();
+    for entry in std::fs::read_dir("/proc")
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let Ok(pid) = name.parse::<u32>() else {
+            continue;
+        };
+        if pid == me {
+            continue;
+        }
+        let Ok(cmdline) = std::fs::read_to_string(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let args: Vec<&str> = cmdline.split('\0').filter(|s| !s.is_empty()).collect();
+        let is_panel = args.len() == 2
+            && args[1] == "panel"
+            && own_exe
+                .as_ref()
+                .is_some_and(|exe| args[0] == exe.to_string_lossy());
+        if is_panel {
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid as i32),
+                Some(nix::sys::signal::Signal::SIGKILL),
+            );
+        }
+    }
+}
+
 fn run_webview(url: &str) -> Result<()> {
     use gtk::prelude::*;
     use wry::WebViewBuilderExtUnix;
