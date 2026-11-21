@@ -124,6 +124,30 @@ pub async fn run(
     let mut probe_down = false;
     let mut probe_episode: Option<String> = None;
     loop {
+        // Master pause: the safety valve. No freezing, everything resumes.
+        if cfg.protection_paused {
+            if !frozen.is_empty() {
+                frozen.resume_all();
+                let _ = Frozen::persist_cleared(config_path);
+                eprintln!("shuang: protection PAUSED — everything resumed");
+            }
+            for guard in guards.iter_mut() {
+                guard.good();
+            }
+            tray.status(tray::Status::Ok, "protection PAUSED").await;
+            let (ev, down) = wait_tick(
+                interval,
+                &mut net_rx,
+                &mut probe_rx,
+                &mut shutdown,
+                &mut frozen,
+                config_path,
+            )
+            .await;
+            let _ = (ev, down);
+            continue;
+        }
+
         // Probe-down always freezes (a dead transport leaks nothing good);
         // paranoid mode additionally freezes on plain network events.
         if probe_down && !trusted::is_trusted(&cfg.trusted_networks) {
@@ -441,10 +465,13 @@ async fn wait_tick(
     // (net_event, probe_down)
     let mut event = false;
     let mut down = false;
+    // Guards: a recv() on a CLOSED channel is instantly ready forever —
+    // without the guard a disabled probe would fire `down` on every select
+    // (the "any claude launch freezes" bug, 2026-11-21).
     tokio::select! {
         _ = tokio::time::sleep(interval) => {},
-        _ = net_rx.recv() => { event = true; },
-        _ = probe_rx.recv() => { down = true; },
+        _ = net_rx.recv(), if !net_rx.is_closed() => { event = true; },
+        _ = probe_rx.recv(), if !probe_rx.is_closed() => { down = true; },
         _ = shutdown.recv() => {
             eprintln!("shuang: shutting down — resuming frozen processes");
             frozen.resume_all();
@@ -509,5 +536,69 @@ fn guards_rotate(guards: &mut [Guard]) {
 fn log_event(config_path: &Path, kind: &str, detail: &str) {
     if let Err(err) = events::append_line(config_path, kind, detail) {
         eprintln!("shuang: cannot write history: {err:#}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression (2026-11-21): a recv() on a CLOSED channel is instantly
+    /// ready forever — a disabled probe made wait_tick return `down=true` on
+    /// every tick and froze every protected app at launch. The select guards
+    /// must keep a closed channel silent.
+    #[tokio::test]
+    async fn closed_channels_do_not_fire_events_or_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        let (net_tx, mut net_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let (probe_tx, mut probe_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        drop(net_tx); // netwatch died / probe disabled: senders gone
+        drop(probe_tx);
+
+        let mut shutdown = Shutdown::new().unwrap();
+        let mut frozen = Frozen::new();
+        let (event, down) = wait_tick(
+            Duration::from_millis(50),
+            &mut net_rx,
+            &mut probe_rx,
+            &mut shutdown,
+            &mut frozen,
+            &config,
+        )
+        .await;
+        assert!(
+            !event,
+            "closed net channel must not look like a network event"
+        );
+        assert!(
+            !down,
+            "closed probe channel must not look like a dead transport"
+        );
+    }
+
+    /// Sanity: a LIVE probe channel still reports down.
+    #[tokio::test]
+    async fn live_probe_channel_reports_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        let (_net_tx, mut net_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let (probe_tx, mut probe_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let mut shutdown = Shutdown::new().unwrap();
+        let mut frozen = Frozen::new();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let _ = probe_tx.send(());
+        });
+        let (_event, down) = wait_tick(
+            Duration::from_secs(5),
+            &mut net_rx,
+            &mut probe_rx,
+            &mut shutdown,
+            &mut frozen,
+            &config,
+        )
+        .await;
+        assert!(down, "a real probe signal must come through");
     }
 }

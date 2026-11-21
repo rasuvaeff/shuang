@@ -36,6 +36,8 @@ pub struct Config {
     pub watchdog: WatchdogConfig,
     /// Freeze when the exit IP's reputation degrades (proxy/hosting flags).
     pub reputation: ReputationConfig,
+    /// Master pause: no freezing at all (the "something is wrong" valve).
+    pub protection_paused: bool,
     /// Fast transport probe: a 1-second TCP ping freezing the instant the
     /// transport dies; also classifies vpn-down vs offline.
     pub probe: ProbeConfig,
@@ -312,6 +314,9 @@ pub struct SettingsOverride {
     pub stability_secs: Option<u64>,
     /// Fast transport probe.
     pub probe_enabled: Option<bool>,
+    /// Master switch: pause ALL freezing (a safety valve when something
+    /// misbehaves); everything frozen resumes immediately.
+    pub protection_paused: Option<bool>,
 }
 
 /// Default config path: `$XDG_CONFIG_HOME/shuang/config.toml`, falling back to
@@ -367,6 +372,9 @@ impl Config {
         }
         if let Some(v) = state.settings.probe_enabled {
             self.probe.enabled = v;
+        }
+        if let Some(v) = state.settings.protection_paused {
+            self.protection_paused = v;
         }
         for mac in &state.trusted_networks {
             if !self.trusted_networks.contains(mac) {
