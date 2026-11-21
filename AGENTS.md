@@ -182,6 +182,13 @@ cargo fmt --all -- --check && cargo clippy --all-targets --locked -- -D warnings
 
 ## CI quirks
 
+- **A new system dependency (apt/brew) must be added to EVERY workflow that
+  builds the crate** — `ci.yml` AND `release.yml` (2026-11-21: gtk/webkit
+  was added to ci.yml only; the v0.6.0 Linux release build failed on
+  `glib-2.0 not found`). Grep all workflow files for build steps when
+  Cargo.toml gains a `[target.'cfg(...)']` dependency with a `*-sys` crate.
+
+
 - **macOS jobs sometimes hang for exactly 15m01s and fail with no logs**
   (GitHub-hosted arm64 runner congestion; seen on code PRs and image-only
   PRs alike, 2026-11-05). The fix is `gh run rerun <id> --failed` — do not
