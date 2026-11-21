@@ -108,13 +108,6 @@
 
 ## Unreleased
 
-- Transport failure interrupts in-progress checks. Diagnostic requests no longer
-  delay the freeze after a known denial.
-- IPv6 disagreements deny the verdict. The panel distinguishes unavailable
-  checks from confirmed routes. Optional strict checks require a confirmed result.
-- On Unix, verify that suspended processes have stopped, rescan for children,
-  and stop processes again if they resume while a denial remains active.
-
 - Route check: the AI edges must agree with EACH OTHER, not only with the
   quorum — per-domain routing (claude.ai via VPN, api.anthropic.com direct)
   is now caught as a leak, in both `shuang leaks` and the daemon.
@@ -147,7 +140,14 @@
 - The panel shows an explicit "token expired — reopen from the tray" message
   in stale tabs instead of an eternal "loading".
 
-## Unreleased
+## 0.7.0 — 2026-11-21
+
+- Transport failure interrupts in-progress checks. Diagnostic requests no longer
+  delay the freeze after a known denial.
+- IPv6 disagreements deny the verdict. The panel distinguishes unavailable
+  checks from confirmed routes. Optional strict checks require a confirmed result.
+- On Unix, verify that suspended processes have stopped, rescan for children,
+  and stop processes again if they resume while a denial remains active.
 
 - The panel shows each app's status, the reason for a freeze, and time to forced
   stop. It confirms when rules take effect and previews process matches before
