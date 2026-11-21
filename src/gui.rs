@@ -12,6 +12,7 @@
 use anyhow::Result;
 
 pub fn run(url: &str) -> Result<()> {
+    #[cfg(target_os = "linux")]
     kill_stale_instances();
     run_webview(url).or_else(|err| {
         eprintln!("shuang: native window unavailable ({err:#}) — opening the browser");
@@ -20,10 +21,10 @@ pub fn run(url: &str) -> Result<()> {
     })
 }
 
-#[cfg(target_os = "linux")]
 /// Kill every other `shuang panel` process first: a stale window from an
 /// earlier session must never block a fresh open (the "closed once, never
 /// opens again" bug, 2026-11-21).
+#[cfg(target_os = "linux")]
 fn kill_stale_instances() {
     let me = std::process::id();
     let own_exe = std::env::current_exe().ok();
@@ -60,6 +61,7 @@ fn kill_stale_instances() {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn run_webview(url: &str) -> Result<()> {
     use gtk::prelude::*;
     use wry::WebViewBuilderExtUnix;
