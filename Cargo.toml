@@ -32,8 +32,8 @@ name = "shuang"
 path = "src/main.rs"
 
 [dependencies]
-tao = "0.31"
-wry = "0.51"
+tao = "0.37"
+wry = "0.57"
 anyhow = "1.0"
 flate2 = "1"
 fs2 = "0.4"
@@ -53,12 +53,12 @@ tempfile = "3.10"
 
 [target.'cfg(unix)'.dependencies]
 ksni = { version = "0.3", features = ["blocking"] }
-nix = { version = "0.31", features = ["signal", "time"] }
+nix = { version = "0.32", features = ["signal", "time"] }
 notify-rust = "4"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
-glib = "0.20"
+glib = "0.21"
 netlink-packet-route = "0.34"
 netlink-sys = "0.9"
 
