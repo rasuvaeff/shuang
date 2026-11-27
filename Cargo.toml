@@ -1,6 +1,6 @@
 [package]
 name = "shuang"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Victor Razuvaev <rasuvaeff@gmail.com>"]
@@ -53,7 +53,7 @@ tempfile = "3.10"
 
 [target.'cfg(unix)'.dependencies]
 ksni = { version = "0.3", features = ["blocking"] }
-nix = { version = "0.32", features = ["signal", "time"] }
+nix = { version = "0.32", features = ["signal", "term", "time"] }
 notify-rust = "4"
 
 [target.'cfg(target_os = "linux")'.dependencies]

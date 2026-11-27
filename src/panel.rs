@@ -21,7 +21,7 @@ use axum::{
     routing::{get, post},
 };
 
-use crate::{allow, config, events, profile};
+use crate::{allow, config, events, procs, profile};
 
 /// Live snapshot the daemon refreshes every tick.
 #[derive(Debug, Clone, Default)]
@@ -103,7 +103,7 @@ pub async fn spawn(
     let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
         Ok(l) => l,
         Err(err) => {
-            eprintln!("shuang: panel disabled ({err})");
+            crate::logging::line(format_args!("shuang: panel disabled ({err})"));
             return None;
         }
     };
@@ -117,7 +117,7 @@ pub async fn spawn(
         let _ = quit_clone;
         let serve = axum::serve(listener, app);
         if let Err(err) = serve.await {
-            eprintln!("shuang: panel stopped ({err})");
+            crate::logging::line(format_args!("shuang: panel stopped ({err})"));
         }
     });
 
@@ -647,11 +647,11 @@ async fn preview_matches(
         .into_iter()
         .map(|pattern| pattern.trim().to_owned())
         .collect::<Vec<_>>();
-    let system = sysinfo::System::new_all();
-    let targets = crate::procs::find_targets(&patterns, &system);
+    let system = procs::snapshot();
+    let targets = procs::find_targets(&patterns, &system);
     let mut affected = std::collections::BTreeSet::new();
     for (_, pid) in &targets {
-        affected.extend(crate::procs::tree(*pid, &system));
+        affected.extend(procs::tree(*pid, &system));
     }
     let matches: Vec<_> = targets
         .iter()
@@ -678,7 +678,7 @@ async fn list_processes(
         )
             .into_response();
     }
-    let system = sysinfo::System::new_all();
+    let system = procs::snapshot();
     let me = std::process::id();
     let mut seen = std::collections::BTreeSet::new();
     for (pid, process) in system.processes() {

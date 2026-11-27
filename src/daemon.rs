@@ -37,6 +37,7 @@ pub async fn run(
     no_notify: bool,
     no_panel: bool,
     prebuilt_tray: Option<TrayHandle>,
+    mut shutdown: Shutdown,
 ) -> Result<u8> {
     let mut base_cfg = config::load(config_path, explicit)?;
     let mut applied_config = format!("{base_cfg:?}");
@@ -57,11 +58,11 @@ pub async fn run(
     // Warnings after the overrides: the panel may already fix what the raw
     // config gets wrong (e.g. interval vs timeout).
     for warning in cfg.warnings() {
-        eprintln!("shuang: warning: {warning}");
+        crate::logging::line(format_args!("shuang: warning: {warning}"));
     }
     let (mut global_list, profile_warning) = net::effective(&cfg, &state);
     if let Some(w) = profile_warning {
-        eprintln!("shuang: {w}");
+        crate::logging::line(format_args!("shuang: {w}"));
     }
 
     // Per-app effective allowlist = global ∪ app's own rules.
@@ -116,7 +117,7 @@ pub async fn run(
         bail!("no protected apps configured and the panel could not start");
     }
     if let Some(panel) = &panel {
-        eprintln!("shuang: panel: {}", panel.url);
+        crate::logging::panel_url(&panel.url);
         tray.set_panel_url(&panel.url).await;
     }
 
@@ -125,9 +126,8 @@ pub async fn run(
     let (probe_tx, mut probe_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut probe_handle =
         probe::spawn_with_proxy(&cfg.probe, probe_tx.clone(), cfg.ip_check.proxy.clone());
-    let mut shutdown = Shutdown::new()?;
 
-    eprintln!(
+    crate::logging::line(format_args!(
         "shuang: daemon started, watching {} app(s), trusted networks: {}",
         cfg.apps.len(),
         if cfg.trusted_networks.is_empty() {
@@ -135,7 +135,7 @@ pub async fn run(
         } else {
             format!("{} MAC(s)", cfg.trusted_networks.len())
         }
-    );
+    ));
 
     let mut event_pending = false;
     let mut probe_down = false;
@@ -226,7 +226,7 @@ pub async fn run(
                         guard_names = next.apps.iter().map(|app| app.name.clone()).collect();
                         let (global, warning) = net::effective(&next, &state);
                         if let Some(warning) = warning {
-                            eprintln!("shuang: {warning}");
+                            crate::logging::line(format_args!("shuang: {warning}"));
                         }
                         global_list = global.clone();
                         app_lists = next
@@ -267,7 +267,9 @@ pub async fn run(
                         for removed in old.keys() {
                             frozen.resume_owner(removed, None)?;
                         }
-                        eprintln!("shuang: applied updated rules and settings");
+                        crate::logging::line(format_args!(
+                            "shuang: applied updated rules and settings"
+                        ));
                     }
                 }
             }
@@ -278,7 +280,7 @@ pub async fn run(
         }
         if rules_error != previous_error {
             if let Some(error) = &rules_error {
-                eprintln!("shuang: {error}; freezing protected apps");
+                crate::logging::line(format_args!("shuang: {error}; freezing protected apps"));
             }
             previous_error = rules_error.clone();
         }
@@ -296,13 +298,15 @@ pub async fn run(
         if cfg.protection_paused && !state_error {
             if !frozen.is_empty() {
                 frozen.resume_all()?;
-                eprintln!("shuang: protection PAUSED — everything resumed");
+                crate::logging::line(format_args!(
+                    "shuang: protection PAUSED — everything resumed"
+                ));
             }
             for guard in guards.iter_mut() {
                 guard.good();
             }
             if let Ok(mut snapshot) = panel_shared.write() {
-                snapshot.applications = bypass_statuses(&cfg, "paused", &system_snapshot());
+                snapshot.applications = bypass_statuses(&cfg, "paused", &procs::snapshot());
                 snapshot.apps = running_names(&snapshot.applications);
                 snapshot.frozen = frozen.len();
                 snapshot.evaluated_revision = Some(revision);
@@ -313,7 +317,9 @@ pub async fn run(
             let Some((ev, down)) =
                 wait_tick(interval, &mut net_rx, &mut probe_rx, &mut shutdown, &apply).await
             else {
-                eprintln!("shuang: shutting down — releasing frozen processes");
+                crate::logging::line(format_args!(
+                    "shuang: shutting down — releasing frozen processes"
+                ));
                 frozen.resume_all()?;
                 return Ok(0);
             };
@@ -347,7 +353,7 @@ pub async fn run(
             && cfg.timing.freeze_on_event_first
             && !trusted::is_trusted(&cfg.trusted_networks)
         {
-            eprintln!("shuang: network change — frozen preemptively");
+            crate::logging::line(format_args!("shuang: network change — frozen preemptively"));
             freeze_apps(&mut frozen, &cfg, &scopes, |_| true)?;
             guards_rotate(&mut guards);
         }
@@ -358,7 +364,7 @@ pub async fn run(
         let mut verdict = while_current!(ipcheck::check(&cfg.ip_check));
         countries.fill(&mut verdict);
         let summary = tray::summary(&verdict);
-        let system = System::new_all();
+        let system = procs::snapshot();
 
         if let Ok(mut snapshot) = panel_shared.write() {
             snapshot.ipv4 = verdict.ipv4.map(|ip| ip.to_string());
@@ -373,7 +379,9 @@ pub async fn run(
         }
 
         if quit.load(std::sync::atomic::Ordering::SeqCst) {
-            eprintln!("shuang: quit from the tray — resuming frozen processes");
+            crate::logging::line(format_args!(
+                "shuang: quit from the tray — resuming frozen processes"
+            ));
             if let Some(panel) = &panel {
                 panel.quit.store(true, std::sync::atomic::Ordering::SeqCst);
             }
@@ -389,12 +397,12 @@ pub async fn run(
                 {
                     frozen.resume_all()?;
                     notifier.resumed();
-                    eprintln!("shuang: trusted network — resumed");
+                    crate::logging::line(format_args!("shuang: trusted network — resumed"));
                     log_event(config_path, "resume", "trusted network");
                 }
             }
             if let Ok(mut snapshot) = panel_shared.write() {
-                snapshot.applications = bypass_statuses(&cfg, "trusted", &system_snapshot());
+                snapshot.applications = bypass_statuses(&cfg, "trusted", &procs::snapshot());
                 snapshot.apps = running_names(&snapshot.applications);
                 snapshot.frozen = frozen.len();
                 snapshot.evaluated_revision = Some(revision);
@@ -406,7 +414,9 @@ pub async fn run(
             let Some((ev, down)) =
                 wait_tick(interval, &mut net_rx, &mut probe_rx, &mut shutdown, &apply).await
             else {
-                eprintln!("shuang: shutting down — releasing frozen processes");
+                crate::logging::line(format_args!(
+                    "shuang: shutting down — releasing frozen processes"
+                ));
                 frozen.resume_all()?;
                 return Ok(0);
             };
@@ -481,7 +491,7 @@ pub async fn run(
                     if hit {
                         let reason =
                             format!("exit {ip} is flagged: {} — reputation guard", rep.render());
-                        eprintln!("shuang: {reason}");
+                        crate::logging::line(format_args!("shuang: {reason}"));
                         log_event(config_path, "reputation", &reason);
                         Some((reason, now))
                     } else {
@@ -604,11 +614,11 @@ pub async fn run(
                     if !frozen.freeze_roots(&target_pids, &app.name, &scopes[idx], &system)? {
                         status.state = "denied";
                     }
-                    eprintln!(
+                    crate::logging::line(format_args!(
                         "shuang: [{}] {message} — froze {} process(es)",
                         app.name,
                         frozen.len()
-                    );
+                    ));
                     log_event(config_path, "freeze", &format!("{}: {message}", app.name));
                     notifier.freeze_started(&message);
                 }
@@ -622,16 +632,16 @@ pub async fn run(
                         .as_secs();
                     status.seconds_left = Some(left);
                     notifier.still_frozen(&message);
-                    eprintln!(
+                    crate::logging::line(format_args!(
                         "shuang: [{}] frozen, {left}s left for the allowed IP",
                         app.name
-                    );
+                    ));
                 }
                 Stage::MustClose => {
-                    eprintln!(
+                    crate::logging::line(format_args!(
                         "shuang: [{}] allowed IP never came back — stopping",
                         app.name
-                    );
+                    ));
                     log_event(config_path, "close", &app.name);
                     if !frozen.freeze_roots(&target_pids, &app.name, &scopes[idx], &system)? {
                         status.state = "denied";
@@ -653,7 +663,10 @@ pub async fn run(
         for idx in ready_to_resume {
             let app = &cfg.apps[idx];
             if frozen.resume_owner(&app.name, Some(&scopes[idx]))? > 0 {
-                eprintln!("shuang: [{}] allowed IP is stable — resumed", app.name);
+                crate::logging::line(format_args!(
+                    "shuang: [{}] allowed IP is stable — resumed",
+                    app.name
+                ));
                 log_event(config_path, "resume", &app.name);
                 notifier.resumed();
             }
@@ -683,7 +696,9 @@ pub async fn run(
         let Some((ev, down)) =
             wait_tick(wait, &mut net_rx, &mut probe_rx, &mut shutdown, &apply).await
         else {
-            eprintln!("shuang: shutting down — releasing frozen processes");
+            crate::logging::line(format_args!(
+                "shuang: shutting down — releasing frozen processes"
+            ));
             frozen.resume_all()?;
             return Ok(0);
         };
@@ -701,7 +716,7 @@ fn refresh_process_status(
     cfg: &config::Config,
     mut system: System,
 ) {
-    use sysinfo::{Pid, ProcessStatus, ProcessesToUpdate};
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate};
 
     let targets: Vec<Vec<Pid>> = cfg
         .apps
@@ -716,7 +731,11 @@ fn refresh_process_status(
     let mut pids: Vec<Pid> = targets.iter().flatten().copied().collect();
     pids.sort_unstable();
     pids.dedup();
-    system.refresh_processes(ProcessesToUpdate::Some(&pids), true);
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&pids),
+        true,
+        ProcessRefreshKind::nothing().without_tasks(),
+    );
     for (app, targets) in applications.iter_mut().zip(targets) {
         if targets.is_empty() || app.state == "stopped" {
             continue;
@@ -818,7 +837,7 @@ fn freeze_apps(
     if !cfg.apps.iter().enumerate().any(|(idx, _)| denied(idx)) {
         return Ok(());
     }
-    let system = system_snapshot();
+    let system = procs::snapshot();
     for (idx, app) in cfg.apps.iter().enumerate().filter(|(idx, _)| denied(*idx)) {
         let roots = procs::find_targets(&app.r#match, &system);
         frozen.freeze_roots(
@@ -911,10 +930,6 @@ async fn check_routes(
     }
 }
 
-fn system_snapshot() -> System {
-    System::new_all()
-}
-
 fn route_client_for(cfg: &config::IpCheckConfig) -> Option<reqwest::Client> {
     let mut builder =
         reqwest::Client::builder().timeout(Duration::from_secs(cfg.timeout_secs.max(1)));
@@ -943,7 +958,7 @@ fn guards_rotate(guards: &mut [Guard]) {
 
 fn log_event(config_path: &Path, kind: &str, detail: &str) {
     if let Err(err) = events::append_line(config_path, kind, detail) {
-        eprintln!("shuang: cannot write history: {err:#}");
+        crate::logging::line(format_args!("shuang: cannot write history: {err:#}"));
     }
 }
 
@@ -962,7 +977,7 @@ mod tests {
         drop(net_tx); // netwatch died / probe disabled: senders gone
         drop(probe_tx);
 
-        let mut shutdown = Shutdown::new().unwrap();
+        let mut shutdown = Shutdown::daemon().unwrap();
         let (event, down) = wait_tick(
             Duration::from_millis(50),
             &mut net_rx,
@@ -987,7 +1002,7 @@ mod tests {
     async fn live_probe_channel_reports_down() {
         let (_net_tx, mut net_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
         let (probe_tx, mut probe_rx) = tokio::sync::mpsc::unbounded_channel::<bool>();
-        let mut shutdown = Shutdown::new().unwrap();
+        let mut shutdown = Shutdown::daemon().unwrap();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(10)).await;
             let _ = probe_tx.send(true);
@@ -1008,7 +1023,7 @@ mod tests {
     async fn apply_notification_wakes_the_daemon() {
         let (_net_tx, mut net_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
         let (_probe_tx, mut probe_rx) = tokio::sync::mpsc::unbounded_channel::<bool>();
-        let mut shutdown = Shutdown::new().unwrap();
+        let mut shutdown = Shutdown::daemon().unwrap();
         let apply = Arc::new(tokio::sync::Notify::new());
         let wake = Arc::clone(&apply);
         tokio::spawn(async move {

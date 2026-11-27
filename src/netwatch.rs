@@ -14,7 +14,9 @@ use tokio::sync::mpsc::UnboundedSender;
 pub fn spawn(tx: UnboundedSender<()>) {
     std::thread::spawn(move || {
         if let Err(err) = watch(&tx) {
-            eprintln!("shuang: network event watcher stopped ({err}); polling only");
+            crate::logging::line(format_args!(
+                "shuang: network event watcher stopped ({err}); polling only"
+            ));
         }
     });
 }

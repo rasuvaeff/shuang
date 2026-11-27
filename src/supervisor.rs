@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sysinfo::{Pid, ProcessStatus, ProcessesToUpdate, System};
 
-use crate::{config, platform};
+use crate::{config, platform, procs};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct Identity {
@@ -62,7 +62,7 @@ pub struct Frozen {
 
 impl Frozen {
     pub fn new() -> Result<Self> {
-        let system = System::new_all();
+        let system = procs::snapshot();
         let supervisor = Identity::lookup(&system, std::process::id())
             .context("current process is missing from the process table")?;
         #[cfg(unix)]
@@ -121,9 +121,9 @@ impl Frozen {
 
     pub fn warn_legacy(state: &config::State) {
         if !state.frozen.is_empty() {
-            eprintln!(
+            crate::logging::line(format_args!(
                 "shuang: state.toml contains old freeze records without a recoverable policy. Inspect the PIDs manually."
-            );
+            ));
         }
     }
 
@@ -182,13 +182,13 @@ impl Frozen {
             identities
                 .iter()
                 .filter(|root| root.alive(system))
-                .flat_map(|root| crate::procs::tree(root.pid, system))
+                .flat_map(|root| procs::tree(root.pid, system))
                 .collect::<Vec<_>>()
         };
         let initially_confirmed = self.freeze_tree(&tree(system), owner, scope, system)?;
         // Once the first pass has stopped the parents, their late children
         // are visible in this fresh process snapshot.
-        let system = System::new_all();
+        let system = procs::snapshot();
         let confirmed = self.freeze_tree(&tree(&system), owner, scope, &system)?;
         Ok(initially_confirmed && confirmed)
     }
@@ -243,7 +243,10 @@ impl Frozen {
             let needs_suspend = first.contains(target);
             if needs_suspend && let Err(err) = platform::suspend(target.pid) {
                 confirmed = false;
-                eprintln!("shuang: could not suspend PID {}: {err:#}", target.pid);
+                crate::logging::line(format_args!(
+                    "shuang: could not suspend PID {}: {err:#}",
+                    target.pid
+                ));
                 journal.claims.retain(|claim| {
                     !(claim.target == *target
                         && claim.supervisor == self.supervisor
@@ -349,7 +352,10 @@ impl Frozen {
                     true
                 }
                 Err(err) => {
-                    eprintln!("shuang: cannot signal PID {}: {err:#}", target.pid);
+                    crate::logging::line(format_args!(
+                        "shuang: cannot signal PID {}: {err:#}",
+                        target.pid
+                    ));
                     false
                 }
             }
@@ -391,20 +397,31 @@ fn process_snapshot(pids: impl Iterator<Item = u32>) -> System {
     pids.sort_unstable();
     pids.dedup();
     let mut system = System::new();
+    // Keep task lookup for claims recorded by older versions under a TID.
     system.refresh_processes(ProcessesToUpdate::Some(&pids), true);
     system
 }
 
-/// Ctrl+C + SIGTERM (where it exists) with one async receiver.
+/// Ctrl+C + SIGTERM (where it exists); only run shuts down on SIGHUP.
 pub struct Shutdown {
     #[cfg(unix)]
     signals: [tokio::signal::unix::Signal; 3], // SIGINT, SIGTERM, SIGHUP
+    #[cfg(unix)]
+    shutdown_on_hangup: bool,
     #[cfg(not(unix))]
     ctrl_c: std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send>>,
 }
 
 impl Shutdown {
-    pub fn new() -> Result<Self> {
+    pub fn run() -> Result<Self> {
+        Self::new(true)
+    }
+
+    pub fn daemon() -> Result<Self> {
+        Self::new(false)
+    }
+
+    fn new(shutdown_on_hangup: bool) -> Result<Self> {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{SignalKind, signal};
@@ -413,12 +430,16 @@ impl Shutdown {
             let hup = signal(SignalKind::hangup())?;
             Ok(Self {
                 signals: [int, term, hup],
+                shutdown_on_hangup,
             })
         }
         #[cfg(not(unix))]
-        Ok(Self {
-            ctrl_c: Box::pin(tokio::signal::ctrl_c()),
-        })
+        {
+            let _ = shutdown_on_hangup;
+            Ok(Self {
+                ctrl_c: Box::pin(tokio::signal::ctrl_c()),
+            })
+        }
     }
 
     /// Resolves when a shutdown signal arrived.
@@ -426,10 +447,18 @@ impl Shutdown {
         #[cfg(unix)]
         {
             let [int, term, hup] = &mut self.signals;
-            tokio::select! {
-                _ = int.recv() => {},
-                _ = term.recv() => {},
-                _ = hup.recv() => {},
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = int.recv() => return,
+                    _ = term.recv() => return,
+                    _ = hup.recv() => {
+                        if self.shutdown_on_hangup {
+                            return;
+                        }
+                        crate::logging::line(format_args!("shuang: received SIGHUP; continuing protection"));
+                    }
+                }
             }
         }
         #[cfg(not(unix))]
@@ -557,7 +586,7 @@ mod tests {
                 .unwrap(),
         );
         let pid = parent.0.id();
-        let before_fork = System::new_all();
+        let before_fork = procs::snapshot();
         parent.0.stdin.take().unwrap().write_all(b"go\n").unwrap();
         let mut line = String::new();
         BufReader::new(parent.0.stdout.take().unwrap())

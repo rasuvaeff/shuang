@@ -69,6 +69,12 @@ pub enum Command {
         #[arg(long)]
         no_panel: bool,
     },
+    /// Print a shell hook that resets terminal input modes before the prompt.
+    #[cfg(unix)]
+    ShellHook {
+        #[arg(value_enum)]
+        shell: Shell,
+    },
     /// One-button leak report: every IP service individually, the AI services'
     /// own edge (/cdn-cgi/trace), timezone, proxy environment, gateway MAC.
     /// Exit 0 clean, 4 leaks found.
@@ -107,6 +113,12 @@ pub enum Command {
         /// Which fix to apply: disable-ipv6, enable-ipv6, dns-public.
         kind: String,
     },
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum Shell {
+    Bash,
 }
 
 #[cfg(test)]

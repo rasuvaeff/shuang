@@ -179,4 +179,15 @@
 - GUI window exits cleanly on close (no lingering processes); RU panel
   translations.
 
+## 0.7.1 — 2026-11-27
+
+- Linux: exclude individual threads from process matching and the panel picker.
+  A rule named after a worker thread no longer freezes its entire application.
+- Unix: restore foreground terminal settings when `shuang run` exits,
+  including after a forced stop.
+- Unix: `shuang shell-hook bash` clears leftover terminal input reporting at
+  the Bash prompt after directly launched apps are frozen or force-stopped.
+- The daemon continues protecting apps after SIGHUP. When stderr is no longer
+  writable, diagnostics go to `daemon.log` next to the config file.
+
 ## Planned
