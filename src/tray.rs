@@ -75,6 +75,8 @@ pub fn open_url(url: &str) {
 pub enum Msg {
     Status(Status, String),
     PanelUrl(String),
+    #[cfg(target_os = "macos")]
+    Exit,
 }
 
 #[cfg(any(windows, target_os = "macos"))]
@@ -139,6 +141,8 @@ mod native {
                     self.panel_url = Some(()); // enabled; the click spawns `shuang panel`
                     self.panel_item.set_enabled(true);
                 }
+                #[cfg(target_os = "macos")]
+                Msg::Exit => _event_loop.exit(),
             }
         }
 
@@ -370,7 +374,7 @@ impl TrayHandle {
         {
             let proxy = native::spawn_threaded(Arc::clone(&quit));
             if proxy.is_none() {
-                eprintln!("shuang: no tray icon — running headless");
+                crate::logging::line(format_args!("shuang: no tray icon — running headless"));
             }
             Self { inner: proxy, quit }
         }
@@ -379,14 +383,18 @@ impl TrayHandle {
         // the daemon; landing here means that did not happen — headless.
         #[cfg(target_os = "macos")]
         {
-            eprintln!("shuang: tray must be built on the main thread — running headless");
+            crate::logging::line(format_args!(
+                "shuang: tray must be built on the main thread — running headless"
+            ));
             Self { inner: None, quit }
         }
 
         // Any other platform: headless.
         #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
         {
-            eprintln!("shuang: tray is not available on this platform — running headless");
+            crate::logging::line(format_args!(
+                "shuang: tray is not available on this platform — running headless"
+            ));
             Self { inner: None, quit }
         }
 
@@ -406,7 +414,9 @@ impl TrayHandle {
                     quit,
                 },
                 Err(err) => {
-                    eprintln!("shuang: no tray icon ({err}) — running headless");
+                    crate::logging::line(format_args!(
+                        "shuang: no tray icon ({err}) — running headless"
+                    ));
                     Self { inner: None, quit }
                 }
             }

@@ -512,7 +512,7 @@ pub fn try_load_state(config_path: &Path) -> Result<State> {
 
 pub fn load_state(config_path: &Path) -> State {
     try_load_state(config_path).unwrap_or_else(|err| {
-        eprintln!("shuang: {err:#}");
+        crate::logging::line(format_args!("shuang: {err:#}"));
         State::default()
     })
 }

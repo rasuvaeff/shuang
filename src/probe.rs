@@ -24,14 +24,14 @@ pub fn spawn_with_proxy(
     }
     let hosts = cfg.hosts.clone();
     let via = cfg.effective_via();
-    eprintln!(
+    crate::logging::line(format_args!(
         "shuang: probe path: {}",
         match via {
             crate::config::ProbeVia::Proxy => "through http(s)_proxy (the apps' path)",
             crate::config::ProbeVia::Direct => "raw TCP (the system-tunnel path)",
             crate::config::ProbeVia::Auto => unreachable!("resolved at spawn"),
         }
-    );
+    ));
     Some(tokio::spawn(async move {
         let mut previous = None;
         let mut interval = tokio::time::interval(Duration::from_secs(1));

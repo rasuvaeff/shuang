@@ -5,7 +5,15 @@
 
 use std::collections::HashMap;
 
-use sysinfo::{Pid, Process, System};
+use sysinfo::{Pid, Process, ProcessRefreshKind, RefreshKind, System};
+
+/// Discover process leaders. On Linux, sysinfo would otherwise also return
+/// individual threads, even though signals such as SIGSTOP affect the group.
+pub fn snapshot() -> System {
+    System::new_with_specifics(
+        RefreshKind::nothing().with_processes(ProcessRefreshKind::everything().without_tasks()),
+    )
+}
 
 /// The root pid plus every descendant (children of children included).
 /// Pids that disappeared mid-scan are skipped silently — the process is gone,
@@ -88,7 +96,7 @@ mod tests {
 
     #[test]
     fn tree_includes_self() {
-        let system = System::new_all();
+        let system = snapshot();
         let me = get_current_pid().unwrap().as_u32();
         let tree = tree(me, &system);
         assert!(tree.contains(&me));
@@ -107,16 +115,17 @@ mod tests {
             .spawn()
             .unwrap();
         thread::sleep(Duration::from_millis(150));
-        let system = System::new_all();
-        let tree = tree(child.id(), &system);
-        assert!(tree.contains(&child.id()), "tree: {tree:?}");
-        crate::platform::kill(child.id()).unwrap();
+        let system = snapshot();
+        let tree = tree(std::process::id(), &system);
+        let child_id = child.id();
+        let _ = child.kill();
         let _ = child.wait();
+        assert!(tree.contains(&child_id), "tree: {tree:?}");
     }
 
     #[test]
     fn name_match_ignores_exe_suffix_and_case_of_pattern() {
-        let system = System::new_all();
+        let system = snapshot();
         let me = get_current_pid().unwrap();
         let process = system.process(me).unwrap();
         // The test harness runs the binary as `shuang-<hash>`; the matcher is
@@ -130,9 +139,42 @@ mod tests {
 
     #[test]
     fn find_targets_excludes_self() {
-        let system = System::new_all();
+        let system = snapshot();
         let targets = find_targets(&["shuang".to_string()], &system);
         let me = std::process::id();
         assert!(targets.iter().all(|(_, pid)| *pid != me));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn snapshot_does_not_match_a_linux_thread_name() {
+        use std::{sync::mpsc, thread};
+
+        let name = format!("sqw-{}", std::process::id());
+        let (ready, tid) = mpsc::channel();
+        let (finish, done) = mpsc::channel::<()>();
+        let worker = thread::Builder::new()
+            .name(name.clone())
+            .spawn(move || {
+                ready.send(nix::unistd::gettid().as_raw()).unwrap();
+                let _ = done.recv();
+            })
+            .unwrap();
+        let tid = Pid::from_u32(tid.recv().unwrap() as u32);
+        let unfiltered = System::new_all();
+        let system = snapshot();
+        drop(finish);
+        worker.join().unwrap();
+
+        let patterns = [name];
+        assert!(
+            find_targets(&patterns, &unfiltered)
+                .iter()
+                .any(|(_, pid)| *pid == tid.as_u32()),
+            "the worker must be visible to the old discovery path"
+        );
+        assert!(system.process(tid).is_none());
+        assert!(find_targets(&patterns, &system).is_empty());
+        assert!(system.process(get_current_pid().unwrap()).is_some());
     }
 }

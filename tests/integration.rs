@@ -25,9 +25,11 @@ impl Drop for ManagedChild {
     }
 }
 
-/// Minimal HTTP server answering every GET with `body`. Returns the base URL
-/// and a request counter, so a test can flip the answer after N requests.
-fn mock_service(body: Arc<String>, counter: Arc<AtomicUsize>) -> String {
+/// Minimal HTTP server choosing an IP for each request.
+fn serve_ip(
+    counter: Arc<AtomicUsize>,
+    answer: impl Fn(usize) -> String + Send + 'static,
+) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     thread::spawn(move || {
@@ -35,8 +37,8 @@ fn mock_service(body: Arc<String>, counter: Arc<AtomicUsize>) -> String {
             let Ok(mut stream) = stream else { break };
             let mut buf = [0u8; 1024];
             let _ = stream.read(&mut buf);
-            counter.fetch_add(1, Ordering::SeqCst);
-            let body = body.clone();
+            let n = counter.fetch_add(1, Ordering::SeqCst);
+            let body = answer(n);
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),
@@ -78,8 +80,305 @@ close_secs = 1
 
 fn spawn(ip: &str) -> (String, Arc<AtomicUsize>) {
     let counter = Arc::new(AtomicUsize::new(0));
-    let url = mock_service(Arc::new(ip.to_string()), counter.clone());
+    let ip = ip.to_owned();
+    let url = serve_ip(counter.clone(), move |_| ip.clone());
     (url, counter)
+}
+
+#[cfg(target_os = "linux")]
+#[track_caller]
+fn await_condition<T>(mut condition: impl FnMut() -> Option<T>) -> T {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(value) = condition() {
+            return value;
+        }
+        assert!(std::time::Instant::now() < deadline, "condition timed out");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn run_restores_the_foreground_tty_after_forced_stop() {
+    use nix::{pty::openpty, sys::termios::tcgetattr};
+    use std::{fs::File, process::Stdio, sync::atomic::AtomicBool};
+
+    let dir = tempfile::tempdir().unwrap();
+    let denied = Arc::new(AtomicBool::new(false));
+    let switch = denied.clone();
+    let url = serve_ip(Arc::new(AtomicUsize::new(0)), move |_| {
+        if switch.load(Ordering::SeqCst) {
+            "198.51.100.50"
+        } else {
+            "203.0.113.7"
+        }
+        .into()
+    });
+    let config = dir.path().join("config.toml");
+    std::fs::write(
+        &config,
+        format!(
+            r#"
+[allow]
+ips = ["203.0.113.7"]
+[ip_check]
+ip_services = ["{url}"]
+ipv6_services = []
+country_services = []
+min_agree = 1
+interval_secs = 1
+timeout_secs = 2
+[timing]
+grace_secs = 0
+close_secs = 0
+"#
+        ),
+    )
+    .unwrap();
+    let tty = openpty(None, None).unwrap();
+    let before = tcgetattr(&tty.slave).unwrap();
+    let _master = File::from(tty.master).try_clone().unwrap();
+    let slave = File::from(tty.slave).try_clone().unwrap();
+    let mut run = ManagedChild(
+        Command::new("setsid")
+            .args(["--ctty", env!("CARGO_BIN_EXE_shuang"), "run", "--config"])
+            .arg(config)
+            .args(["--", "sh", "-c", "stty raw -echo && exec sleep 30"])
+            .stdin(Stdio::from(slave.try_clone().unwrap()))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    await_condition(|| (tcgetattr(&slave).unwrap() != before).then_some(()));
+    denied.store(true, Ordering::SeqCst);
+    let result = await_condition(|| run.0.try_wait().unwrap());
+    assert_eq!(result.code(), Some(75));
+    assert_eq!(tcgetattr(&slave).unwrap(), before);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn bash_prompt_recovers_when_daemon_freezes_and_kills_a_direct_launch() {
+    use nix::{
+        pty::openpty,
+        sys::signal::{Signal, kill},
+        unistd::{Pid, tcgetpgrp},
+    };
+    use std::{
+        fs::{self, File},
+        process::Stdio,
+        sync::{atomic::AtomicBool, mpsc},
+        time::Instant,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let marker = format!("shuang-tty-{}", dir.path().file_name().unwrap().display());
+    let denied = Arc::new(AtomicBool::new(false));
+    let switch = denied.clone();
+    let url = serve_ip(Arc::new(AtomicUsize::new(0)), move |_| {
+        if switch.load(Ordering::SeqCst) {
+            "198.51.100.50"
+        } else {
+            "203.0.113.7"
+        }
+        .into()
+    });
+    let config = dir.path().join("config.toml");
+    fs::write(
+        &config,
+        format!(
+            r#"
+[allow]
+ips = ["203.0.113.7"]
+[ip_check]
+ip_services = ["{url}"]
+ipv6_services = []
+country_services = []
+min_agree = 1
+interval_secs = 1
+[timing]
+grace_secs = 3
+close_secs = 0
+[[apps]]
+name = "terminal fixture"
+match = ["args:{marker}"]
+"#
+        ),
+    )
+    .unwrap();
+
+    let tty = openpty(None, None).unwrap();
+    let mut master = File::from(tty.master).try_clone().unwrap();
+    let slave = File::from(tty.slave).try_clone().unwrap();
+    let shell = ManagedChild(
+        Command::new("setsid")
+            .args(["--ctty", "bash", "--noprofile", "--norc", "-i"])
+            .env("PS1", "fixture> ")
+            .env("INPUTRC", "/dev/null")
+            .env("TERM", "xterm-256color")
+            .env("LC_ALL", "C")
+            .env("PROMPT_COMMAND", "printf 'status:%d\\n' \"$?\"")
+            .env("SHUANG_BIN", env!("CARGO_BIN_EXE_shuang"))
+            .env("SHUANG_TEST_MARKER", marker)
+            .stdin(Stdio::from(slave.try_clone().unwrap()))
+            .stdout(Stdio::from(slave.try_clone().unwrap()))
+            .stderr(Stdio::from(slave))
+            .spawn()
+            .unwrap(),
+    );
+    let mut reader = master.try_clone().unwrap();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut buf = [0; 4096];
+        while let Ok(n @ 1..) = reader.read(&mut buf) {
+            if tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    let receive = |needle: &[u8]| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut result = Vec::new();
+        while !result.windows(needle.len()).any(|w| w == needle) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            result.extend(rx.recv_timeout(remaining).unwrap_or_else(|err| {
+                panic!(
+                    "{err}: terminal output {:?}",
+                    String::from_utf8_lossy(&result)
+                )
+            }));
+        }
+        result
+    };
+    let prompt = b"fixture> ";
+    let reset = b"\x1b[?1000;1002;1003;1004;1006;1016;2004;2031l";
+    receive(prompt);
+    master
+        .write_all(b"source <(\"$SHUANG_BIN\" shell-hook bash); source <(\"$SHUANG_BIN\" shell-hook bash); false\n")
+        .unwrap();
+    let output = receive(prompt);
+    assert_eq!(
+        output.windows(reset.len()).filter(|w| *w == reset).count(),
+        1
+    );
+    assert!(output.windows(10).any(|w| w == b"status:1\r\n"));
+
+    // A real foreground job leaves focus reports enabled when forcibly stopped.
+    master.write_all(b"bash -c 'stty raw -echo; printf \"\\033[?1004h\"; exec -a \"$SHUANG_TEST_MARKER\" sleep 30'\n").unwrap();
+    receive(b"\x1b[?1004h");
+    let shell_pid = Pid::from_raw(shell.0.id() as i32);
+    let job = tcgetpgrp(&master).unwrap();
+    assert_ne!(job, shell_pid);
+    let mut daemon = ManagedChild(
+        Command::new(env!("CARGO_BIN_EXE_shuang"))
+            .args([
+                "daemon",
+                "--no-tray",
+                "--no-notify",
+                "--no-panel",
+                "--config",
+            ])
+            .arg(config)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    denied.store(true, Ordering::SeqCst);
+    let output = receive(prompt);
+    assert!(output.windows(reset.len()).any(|w| w == reset));
+    assert_eq!(tcgetpgrp(&master).unwrap(), shell_pid);
+    let proc_status = format!("/proc/{job}/status");
+    assert!(
+        fs::read_to_string(&proc_status)
+            .unwrap()
+            .contains("State:\tT")
+    );
+    master.write_all(b"printf 'shell:%s\\n' usable\n").unwrap();
+    receive(b"shell:usable\r\n");
+    await_condition(|| (!std::path::Path::new(&proc_status).exists()).then_some(()));
+    master
+        .write_all(b"printf 'shell:%s\\n' after-kill\n")
+        .unwrap();
+    receive(b"shell:after-kill\r\n");
+    kill(Pid::from_raw(daemon.0.id() as i32), Signal::SIGTERM).unwrap();
+    assert!(await_condition(|| daemon.0.try_wait().unwrap()).success());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn daemon_survives_hangup_and_detached_stderr_then_releases_its_hold() {
+    use nix::{
+        pty::openpty,
+        sys::signal::{Signal, kill},
+        unistd::Pid,
+    };
+    use std::{
+        fs::{self, File},
+        process::Stdio,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let marker = format!("shuang-hup-{}", dir.path().file_name().unwrap().display());
+    let config = write_config(dir.path(), 60, 1);
+    let mut contents = fs::read_to_string(&config)
+        .unwrap()
+        .replace("ips = [\"203.0.113.7\"]", "ips = [\"198.51.100.50\"]");
+    contents.push_str(&format!(
+        "\n[[apps]]\nname = \"hangup\"\nmatch = [\"args:{marker}\"]\n"
+    ));
+    fs::write(&config, contents).unwrap();
+    let target = ManagedChild(
+        Command::new("bash")
+            .args(["-c", "exec -a \"$1\" sleep 30", "shuang-test", &marker])
+            .spawn()
+            .unwrap(),
+    );
+    let target_stopped = || {
+        let status = fs::read_to_string(format!("/proc/{}/status", target.0.id())).unwrap();
+        status.lines().any(|line| line.starts_with("State:\tT"))
+    };
+    let tty = openpty(None, None).unwrap();
+    // File::try_clone duplicates with close-on-exec. The daemon must not keep
+    // a copy of the master open after the test drops its handle.
+    let master = File::from(tty.master).try_clone().unwrap();
+    let mut stderr = File::from(tty.slave).try_clone().unwrap();
+    let mut daemon = ManagedChild(
+        Command::new(env!("CARGO_BIN_EXE_shuang"))
+            .args([
+                "daemon",
+                "--no-tray",
+                "--no-notify",
+                "--no-panel",
+                "--config",
+                &config,
+            ])
+            .stderr(Stdio::from(stderr.try_clone().unwrap()))
+            .spawn()
+            .unwrap(),
+    );
+    await_condition(|| target_stopped().then_some(()));
+    drop(master);
+    assert_eq!(
+        stderr.write_all(b"probe").unwrap_err().raw_os_error(),
+        Some(nix::libc::EIO)
+    );
+    let pid = Pid::from_raw(daemon.0.id() as i32);
+    kill(pid, Signal::SIGHUP).unwrap();
+    let log = dir.path().join("daemon.log");
+    await_condition(|| {
+        fs::read_to_string(&log).ok().and_then(|text| {
+            (text.contains("received SIGHUP") && text.contains("left for the allowed IP"))
+                .then_some(())
+        })
+    });
+    assert!(target_stopped());
+    assert!(daemon.0.try_wait().unwrap().is_none());
+    kill(pid, Signal::SIGTERM).unwrap();
+    assert!(await_condition(|| daemon.0.try_wait().unwrap()).success());
+    await_condition(|| (!target_stopped()).then_some(()));
 }
 
 #[cfg(target_os = "linux")]

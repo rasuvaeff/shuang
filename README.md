@@ -65,8 +65,12 @@ shuang panel                         # the settings panel in a native window
 - IP goes bad **mid-run** → the whole process tree (MCP servers, `curl`,
   `git`, …) is frozen; if the allowed IP returns within the grace period, the
   command continues — otherwise it is stopped, exit code **75**;
-- Ctrl+C → everything frozen is **resumed** before shuang exits;
+- Ctrl+C stops the command and its frozen descendants;
 - otherwise the exit code is the command's own.
+
+On Unix, `shuang run` restores the original foreground terminal settings when
+it exits, including after a forced stop. While the command is frozen, it
+still occupies the terminal; use another tab to run shell commands.
 
 With an **empty allowlist** the first run remembers the startup addresses as
 the allowed ones (freeze on *change*). Add entries with `shuang allow`:
@@ -104,12 +108,24 @@ menu resumes everything. On GNOME the icon needs the AppIndicator extension
 "VPN blinked for 8s" notification on recovery — not two popups; a freeze
 longer than 60s alerts once.
 
+If the Bash prompt shows strange characters after the daemon freezes Claude
+Code, upgrade to shuang 0.7.1 or later. For Bash 5.1+, add this to `~/.bashrc`:
+
+```bash
+source <(shuang shell-hook bash)
+```
+
+Open a new terminal and launch Claude as usual. The hook clears leftover mouse,
+focus and keyboard reporting when the prompt returns after a freeze or forced stop. With job
+control, use `fg` to return to the session after the daemon reports that it
+resumed the job.
+
 ### Run it past the terminal (autostart)
 
-`shuang daemon` runs in the foreground; closing the terminal sends SIGHUP —
-handled like Ctrl+C (everything frozen is resumed first). To keep it running
-independently of any terminal and start it at login, use a systemd **user**
-service:
+`shuang daemon` keeps protecting apps when it receives SIGHUP. If stderr
+becomes unwritable, diagnostics go to `daemon.log` next to the config.
+Ctrl+C, SIGTERM, and Quit from the tray still stop the daemon and release
+its holds. For automatic startup at login, use a systemd **user** service:
 
 ```ini
 # ~/.config/systemd/user/shuang.service
@@ -191,6 +207,9 @@ shuang profile   # list / activate allowlist profiles
 
 `~/.config/shuang/config.toml` — missing file means built-in defaults
 (an explicitly passed `--config` that is missing is an error, not defaults).
+
+On Linux, `match` and the panel's process picker use process names, not worker
+thread names that tools such as `htop` can also show.
 
 ```toml
 [[apps]]

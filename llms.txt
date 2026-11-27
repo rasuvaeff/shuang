@@ -25,6 +25,12 @@ curl -fsSL https://raw.githubusercontent.com/rasuvaeff/shuang/master/scripts/ins
   checks apply when any protected app's effective allowlist permits the exit.
 - The panel reports per-app decisions and countdowns, confirms rule application,
   and previews process matches before saving a new app.
+- On Linux, app matching and the process picker exclude individual threads.
+- On Unix, `run` restores foreground terminal settings when it exits.
+  For apps launched directly in Bash 5.1+, add `source <(shuang shell-hook bash)`
+  to `~/.bashrc` to clear leftover emulator input modes at the prompt.
+  `daemon` continues on SIGHUP and logs to `daemon.log` next to the config
+  if stderr fails. SIGINT, SIGTERM, and tray Quit still stop the daemon.
 - IPv6 must match an allowed IP/subnet; an IPv4 country result cannot allow IPv6.
 - State writes are locked and atomically replaced; malformed state fails closed.
 - Network checks contact configured IP/country services; optional route checks
@@ -37,6 +43,7 @@ shuang check [--json] [--config PATH]      # exit 0 allowed, 3 not allowed, 1 er
 shuang allow <ip|cidr|CC> [--config PATH]  # append to state.toml
 shuang run [--config PATH] -- <cmd...>     # exit 69 bad IP at start, 75 stopped mid-run
 shuang daemon [--no-tray] [--no-notify] [--config PATH]
+shuang shell-hook bash                    # print Bash prompt hook (Unix)
 shuang leaks [--config PATH]               # per-service, /cdn-cgi-trace, DNS, reputation; exit 4 on problems
 shuang doctor [--config PATH]              # environment diagnostics; exit 4 on problems
 shuang events [--tail N]
