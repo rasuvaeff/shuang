@@ -327,7 +327,10 @@ match = ["args:{marker}"]
     if use_freezer {
         master.write_all(b"bash -c 'trap \"printf CONT_HANDLER\" CONT; stty raw -echo; printf \"\\033[?1003h\\033[?1006h\\033[?1004h\"; read -r -n 1 key; printf \"input:%s\\n\" \"$key\"; stty sane' \"$SHUANG_TEST_MARKER\"\n").unwrap();
     } else {
-        master.write_all(b"bash -c 'stty raw -echo; printf \"\\033[?1004h\"; exec -a \"$SHUANG_TEST_MARKER\" sleep 30'\n").unwrap();
+        // Put the match marker in argv before announcing readiness. A STOP
+        // immediately after printf must not prevent a later exec from making
+        // the fixture discoverable by the daemon.
+        master.write_all(b"bash -c 'stty raw -echo; printf \"\\033[?1004h\"; read -r' \"$SHUANG_TEST_MARKER\"\n").unwrap();
     }
     receive(b"\x1b[?1004h");
     let shell_pid = Pid::from_raw(shell.0.id() as i32);

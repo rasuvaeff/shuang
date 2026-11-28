@@ -163,6 +163,7 @@ pub fn kill(pid: u32) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 pub fn is_frozen(pid: u32) -> bool {
     #[cfg(target_os = "linux")]
     return crate::freezer::is_frozen(pid);
@@ -173,6 +174,7 @@ pub fn is_frozen(pid: u32) -> bool {
     }
 }
 
+#[cfg(unix)]
 pub fn is_suspended(pid: u32, status: sysinfo::ProcessStatus) -> bool {
     matches!(
         status,
