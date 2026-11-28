@@ -5,7 +5,7 @@
 **VPN 掉线时冻结你的应用 —— 暂停,而不是杀掉。**
 
 `shuang` 是一个免费、开源的按应用 kill switch。当你的外部 IP 不在白名单里时,
-所选应用的**整棵进程树会被挂起**(`SIGSTOP`):不执行任何指令、不发送任何数据。
+所选应用的**整棵进程树会被挂起**（Linux 优先使用 cgroup freezer，否则使用 `SIGSTOP`）：不执行任何指令、不发送任何数据。
 正确的 IP 回来后,它从暂停的地方继续运行。若在宽限期内始终没有回来,进程树将被停止。
 
 为 AI 编程代理(Claude Code、Codex、Gemini CLI)以及任何绝不能以错误地址联网的
@@ -97,8 +97,15 @@ KDE/XFCE/Cinnamon 原生支持。
 **通知默认防打扰:**短暂的闪断在恢复时只产生一条安静的通知
 「VPN 闪断了 8 秒」,而不是两个弹窗;冻结超过 60 秒只提醒一次。
 
-如果守护进程冻结 Claude Code 后，Bash 提示符出现异常字符，请将 shuang 升级到
-0.7.1 或更新版本。使用 Bash 5.1 或更新版本时，请将下面这行加入 `~/.bashrc`：
+在具有可写 cgroup v2 委派的 Linux 系统上（包括常见的 systemd 用户会话），
+守护进程会自动使用 cgroup freezer。直接启动的 Claude 在冻结时保留终端，
+恢复时无需 `fg`、shell 钩子或 `shuang run`。恢复后每个进程返回原来的 cgroup；
+独立保护规则的所有冻结声明仍须解除，进程才能继续运行。
+
+如果 freezer 不可用，保护会回退到 `SIGSTOP`。此时 shell 可能收回终端，
+之后的 `SIGCONT` 处理程序又可能开启鼠标报告。在这些系统上，交互应用请使用
+`shuang run -- claude`，以便冻结期间仍占用终端。Bash 5.1 或更新版本还可以
+在 `~/.bashrc` 中加入提示符清理：
 
 ```bash
 source <(shuang shell-hook bash)

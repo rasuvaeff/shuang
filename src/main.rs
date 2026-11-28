@@ -15,6 +15,8 @@ mod daemon;
 mod doctor;
 mod events;
 mod fix;
+#[cfg(target_os = "linux")]
+mod freezer;
 mod guard;
 mod gui;
 mod ipcheck;

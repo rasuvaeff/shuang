@@ -73,6 +73,11 @@ cargo fmt --all -- --check && cargo clippy --all-targets --locked -- -D warnings
 - **Freeze before close, always.** The `guard` state machine must freeze on
   the tick the verdict goes bad and may only report `MustClose` on a later
   tick. A zero grace still gets one frozen tick (`zero_grace_closes_on_next_tick`).
+- **Linux prefers the delegated cgroup v2 freezer.** Each target has its own
+  frozen leaf under its original cgroup. Resume migrates only that process back;
+  never thaw a whole shared leaf or send SIGCONT after freezer recovery. The
+  last-claim and identity checks in `Frozen` still gate every resume. Without
+  delegation, SIGSTOP remains the fail-closed fallback.
 - **The whole process tree is frozen**, not just the root pid — Claude Code
   spawns MCP servers, `curl`, `git`. `procs::tree` collects descendants via
   the sysinfo parent map; pids that vanish mid-scan are skipped (nothing to

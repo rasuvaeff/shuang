@@ -238,7 +238,8 @@ impl Frozen {
                 continue;
             }
             #[cfg(unix)]
-            let needs_suspend = !is_stopped(*target, &system);
+            let needs_suspend = !is_stopped(*target, &system)
+                || (first.contains(target) && platform::is_frozen(target.pid));
             #[cfg(windows)]
             let needs_suspend = first.contains(target);
             if needs_suspend && let Err(err) = platform::suspend(target.pid) {
@@ -384,12 +385,7 @@ impl Frozen {
 fn is_stopped(target: Identity, system: &System) -> bool {
     system
         .process(Pid::from_u32(target.pid))
-        .is_some_and(|process| {
-            matches!(
-                process.status(),
-                ProcessStatus::Stop | ProcessStatus::Tracing
-            )
-        })
+        .is_some_and(|process| platform::is_suspended(target.pid, process.status()))
 }
 
 fn process_snapshot(pids: impl Iterator<Item = u32>) -> System {
@@ -492,12 +488,8 @@ mod tests {
         fn wait_stopped(&self, stopped: bool) {
             let started = Instant::now();
             loop {
-                let status = fs::read_to_string(format!("/proc/{}/status", self.0.id())).unwrap();
-                if status
-                    .lines()
-                    .any(|line| line.starts_with("State:") && line.contains('T'))
-                    == stopped
-                {
+                let pid = self.0.id();
+                if is_stopped(self.identity(), &process_snapshot([pid].into_iter())) == stopped {
                     return;
                 }
                 assert!(started.elapsed() < Duration::from_secs(2));
@@ -508,7 +500,7 @@ mod tests {
 
     impl Drop for Target {
         fn drop(&mut self) {
-            let _ = self.0.kill();
+            let _ = platform::kill(self.0.id());
             let _ = self.0.wait();
         }
     }
@@ -541,6 +533,39 @@ mod tests {
         target.wait_stopped(true);
         assert_eq!(second.resume_all().unwrap(), 1);
         target.wait_stopped(false);
+    }
+
+    #[test]
+    fn releasing_a_parent_does_not_thaw_a_child_with_another_claim() {
+        use std::io::{BufRead, BufReader};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut parent = Target(
+            Command::new("sh")
+                .args(["-c", "sleep 30 & echo $!; wait"])
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let mut line = String::new();
+        BufReader::new(parent.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let child: u32 = line.trim().parse().unwrap();
+        let pid = parent.0.id();
+        let mut frozen = supervisor(dir.path(), std::process::id());
+        let system = procs::snapshot();
+        assert!(frozen.freeze_roots(&[pid], "parent", "a", &system).unwrap());
+        assert!(
+            frozen
+                .freeze_roots(&[child], "child", "b", &system)
+                .unwrap()
+        );
+        let child_id = Identity::lookup(&system, child).unwrap();
+        assert_eq!(frozen.resume_owner("parent", None).unwrap(), 1);
+        assert!(is_stopped(child_id, &process_snapshot([child].into_iter())));
+        frozen.kill_owner("child").unwrap();
+        let _ = parent.0.wait();
     }
 
     #[test]

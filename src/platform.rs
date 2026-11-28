@@ -1,6 +1,7 @@
 //! Process control primitives, per platform.
 //!
-//! Unix suspends with `SIGSTOP` (the same in-kernel pause job control uses);
+//! Linux prefers the cgroup v2 freezer when delegated; Unix otherwise uses
+//! `SIGSTOP` (the same in-kernel pause job control uses);
 //! Windows will use `NtSuspendProcess` (0.2, together with the tray). A
 //! suspended process runs zero instructions and sends nothing.
 
@@ -136,15 +137,49 @@ mod imp {
 }
 
 pub fn suspend(pid: u32) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    if crate::freezer::suspend(pid).is_ok() {
+        return Ok(());
+    }
     imp::suspend(pid)
 }
 
 pub fn resume(pid: u32) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    if let Some(result) = crate::freezer::resume(pid) {
+        return Ok(result?);
+    }
     imp::resume(pid)
 }
 
 pub fn kill(pid: u32) -> Result<()> {
-    imp::kill(pid)
+    #[cfg(target_os = "linux")]
+    let group = crate::freezer::group(pid);
+    imp::kill(pid)?;
+    #[cfg(target_os = "linux")]
+    if let Some(group) = group {
+        crate::freezer::cleanup(&group);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+pub fn is_frozen(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    return crate::freezer::is_frozen(pid);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+#[cfg(unix)]
+pub fn is_suspended(pid: u32, status: sysinfo::ProcessStatus) -> bool {
+    matches!(
+        status,
+        sysinfo::ProcessStatus::Stop | sysinfo::ProcessStatus::Tracing
+    ) || is_frozen(pid)
 }
 
 #[cfg(test)]
@@ -180,12 +215,29 @@ mod tests {
 
         suspend(pid).unwrap();
         thread::sleep(Duration::from_millis(50));
-        assert!(proc_state(pid).contains('T'), "expected stopped state");
+        assert!(
+            proc_state(pid).contains('T') || is_frozen(pid),
+            "expected suspended state"
+        );
 
         resume(pid).unwrap();
         thread::sleep(Duration::from_millis(50));
         assert!(proc_state(pid).contains('S'), "expected sleeping state");
 
+        kill(pid).unwrap();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn legacy_sigstop_hold_is_resumed_with_sigcont() {
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        imp::suspend(pid).unwrap();
+        thread::sleep(Duration::from_millis(50));
+        assert!(proc_state(pid).contains('T'));
+        resume(pid).unwrap();
+        thread::sleep(Duration::from_millis(50));
+        assert!(proc_state(pid).contains('S'));
         kill(pid).unwrap();
         let _ = child.wait();
     }

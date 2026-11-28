@@ -20,9 +20,35 @@ struct ManagedChild(std::process::Child);
 #[cfg(target_os = "linux")]
 impl Drop for ManagedChild {
     fn drop(&mut self) {
+        let group = process_freezer(self.0.id());
         let _ = self.0.kill();
         let _ = self.0.wait();
+        if let Some(group) = group {
+            let _ = std::fs::remove_dir(group);
+        }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn process_suspended(pid: u32) -> bool {
+    let stopped = std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .is_ok_and(|s| s.lines().any(|line| line.starts_with("State:\tT")));
+    stopped
+        || process_freezer(pid).is_some_and(|path| {
+            std::fs::read_to_string(path.join("cgroup.events"))
+                .is_ok_and(|events| events.lines().any(|line| line == "frozen 1"))
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn process_freezer(pid: u32) -> Option<std::path::PathBuf> {
+    let raw = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
+    let path = raw.lines().find_map(|line| line.strip_prefix("0::/"))?;
+    let path = std::path::PathBuf::from("/sys/fs/cgroup").join(path);
+    path.file_name()?
+        .to_str()?
+        .starts_with("shuang-freeze-")
+        .then_some(path)
 }
 
 /// Minimal HTTP server choosing an IP for each request.
@@ -161,6 +187,34 @@ close_secs = 0
 #[cfg(target_os = "linux")]
 #[test]
 fn bash_prompt_recovers_when_daemon_freezes_and_kills_a_direct_launch() {
+    terminal_cycle(false);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn daemon_freezer_preserves_foreground_and_resumes_input_without_a_shell_hook() {
+    // GitHub/container hosts may expose a read-only or undelegated hierarchy.
+    // The SIGSTOP path is covered unconditionally by the other PTY test.
+    let raw = std::fs::read_to_string("/proc/self/cgroup").unwrap();
+    let Some(path) = raw.lines().find_map(|line| line.strip_prefix("0::/")) else {
+        return;
+    };
+    let probe = std::path::PathBuf::from("/sys/fs/cgroup")
+        .join(path)
+        .join(format!("shuang-freezer-probe-{}", std::process::id()));
+    if std::fs::create_dir(&probe).is_err() {
+        eprintln!("no delegated cgroup v2 hierarchy; freezer PTY test skipped");
+        return;
+    }
+    let usable = std::fs::write(probe.join("cgroup.freeze"), "1").is_ok();
+    std::fs::remove_dir(probe).unwrap();
+    if usable {
+        terminal_cycle(true);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn terminal_cycle(use_freezer: bool) {
     use nix::{
         pty::openpty,
         sys::signal::{Signal, kill},
@@ -186,6 +240,7 @@ fn bash_prompt_recovers_when_daemon_freezes_and_kills_a_direct_launch() {
         .into()
     });
     let config = dir.path().join("config.toml");
+    let grace = if use_freezer { 30 } else { 3 };
     fs::write(
         &config,
         format!(
@@ -199,7 +254,7 @@ country_services = []
 min_agree = 1
 interval_secs = 1
 [timing]
-grace_secs = 3
+grace_secs = {grace}
 close_secs = 0
 [[apps]]
 name = "terminal fixture"
@@ -253,20 +308,30 @@ match = ["args:{marker}"]
         result
     };
     let prompt = b"fixture> ";
-    let reset = b"\x1b[?1000;1002;1003;1004;1006;1016;2004;2031l";
+    let reset = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l";
     receive(prompt);
-    master
-        .write_all(b"source <(\"$SHUANG_BIN\" shell-hook bash); source <(\"$SHUANG_BIN\" shell-hook bash); false\n")
-        .unwrap();
-    let output = receive(prompt);
-    assert_eq!(
-        output.windows(reset.len()).filter(|w| *w == reset).count(),
-        1
-    );
-    assert!(output.windows(10).any(|w| w == b"status:1\r\n"));
+    if !use_freezer {
+        master
+            .write_all(b"source <(\"$SHUANG_BIN\" shell-hook bash); source <(\"$SHUANG_BIN\" shell-hook bash); false\n")
+            .unwrap();
+        let output = receive(prompt);
+        assert_eq!(
+            output.windows(reset.len()).filter(|w| *w == reset).count(),
+            1
+        );
+        assert!(output.windows(10).any(|w| w == b"status:1\r\n"));
+    }
 
-    // A real foreground job leaves focus reports enabled when forcibly stopped.
-    master.write_all(b"bash -c 'stty raw -echo; printf \"\\033[?1004h\"; exec -a \"$SHUANG_TEST_MARKER\" sleep 30'\n").unwrap();
+    // A resume handler would re-enable reporting if SIGCONT were used. The
+    // freezer must leave the original foreground job and its terminal intact.
+    if use_freezer {
+        master.write_all(b"bash -c 'trap \"printf CONT_HANDLER\" CONT; stty raw -echo; printf \"\\033[?1003h\\033[?1006h\\033[?1004h\"; read -r -n 1 key; printf \"input:%s\\n\" \"$key\"; stty sane' \"$SHUANG_TEST_MARKER\"\n").unwrap();
+    } else {
+        // Put the match marker in argv before announcing readiness. A STOP
+        // immediately after printf must not prevent a later exec from making
+        // the fixture discoverable by the daemon.
+        master.write_all(b"bash -c 'stty raw -echo; printf \"\\033[?1004h\"; read -r' \"$SHUANG_TEST_MARKER\"\n").unwrap();
+    }
     receive(b"\x1b[?1004h");
     let shell_pid = Pid::from_raw(shell.0.id() as i32);
     let job = tcgetpgrp(&master).unwrap();
@@ -286,7 +351,29 @@ match = ["args:{marker}"]
             .spawn()
             .unwrap(),
     );
+    // Exercise SIGSTOP fallback even on a host with a delegated freezer.
+    if !use_freezer {
+        kill(job, Signal::SIGSTOP).unwrap();
+    }
     denied.store(true, Ordering::SeqCst);
+    if use_freezer {
+        await_condition(|| process_suspended(job.as_raw() as u32).then_some(()));
+        assert!(process_freezer(job.as_raw() as u32).is_some());
+        assert_eq!(tcgetpgrp(&master).unwrap(), job);
+        master.write_all(b"z").unwrap();
+        // Input stays queued while frozen; neither Bash's prompt nor the
+        // command's input handler may run before the network is allowed.
+        assert!(rx.recv_timeout(Duration::from_millis(150)).is_err());
+        denied.store(false, Ordering::SeqCst);
+        let output = receive(prompt);
+        assert!(output.windows(7).any(|w| w == b"input:z"));
+        assert!(!output.windows(12).any(|w| w == b"CONT_HANDLER"));
+        assert!(!output.windows(7).any(|w| w == b"Stopped"));
+        assert_eq!(tcgetpgrp(&master).unwrap(), shell_pid);
+        kill(Pid::from_raw(daemon.0.id() as i32), Signal::SIGTERM).unwrap();
+        assert!(await_condition(|| daemon.0.try_wait().unwrap()).success());
+        return;
+    }
     let output = receive(prompt);
     assert!(output.windows(reset.len()).any(|w| w == reset));
     assert_eq!(tcgetpgrp(&master).unwrap(), shell_pid);
@@ -336,10 +423,7 @@ fn daemon_survives_hangup_and_detached_stderr_then_releases_its_hold() {
             .spawn()
             .unwrap(),
     );
-    let target_stopped = || {
-        let status = fs::read_to_string(format!("/proc/{}/status", target.0.id())).unwrap();
-        status.lines().any(|line| line.starts_with("State:\tT"))
-    };
+    let target_stopped = || process_suspended(target.0.id());
     let tty = openpty(None, None).unwrap();
     // File::try_clone duplicates with close-on-exec. The daemon must not keep
     // a copy of the master open after the test drops its handle.
@@ -549,11 +633,7 @@ grace_secs = 60
 
     let started = std::time::Instant::now();
     loop {
-        let status = std::fs::read_to_string(format!("/proc/{}/status", target.0.id())).unwrap();
-        if status
-            .lines()
-            .any(|line| line.starts_with("State:") && line.contains('T'))
-        {
+        if process_suspended(target.0.id()) {
             break;
         }
         assert!(
@@ -958,12 +1038,7 @@ grace_secs = 60
     udp.recv(&mut packet).unwrap();
     drop(probe);
     let failed_at = Instant::now();
-    let status = format!("/proc/{}/status", target.0.id());
-    while !std::fs::read_to_string(&status)
-        .unwrap()
-        .lines()
-        .any(|line| line.starts_with("State:") && line.contains("T (stopped)"))
-    {
+    while !process_suspended(target.0.id()) {
         assert!(
             failed_at.elapsed() < Duration::from_secs(4),
             "transport signal did not interrupt the slow IP request"
@@ -1067,11 +1142,7 @@ services = ["shuang-route.test"]
     rx.recv_timeout(Duration::from_secs(5))
         .expect("the app-only allowance did not trigger a route check");
     let started = std::time::Instant::now();
-    while !std::fs::read_to_string(format!("/proc/{}/status", target.0.id()))
-        .unwrap()
-        .lines()
-        .any(|line| line.starts_with("State:") && line.contains("T (stopped)"))
-    {
+    while !process_suspended(target.0.id()) {
         assert!(
             started.elapsed() < Duration::from_secs(3),
             "route failure did not freeze the app"

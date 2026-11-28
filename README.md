@@ -6,7 +6,7 @@
 
 `shuang` is a free, open-source per-application kill switch. While your
 external IP is not on the allowlist, the whole process tree of the chosen
-application is **suspended** (`SIGSTOP`) — it runs zero instructions and sends
+application is **suspended** (Linux cgroup freezer where available, otherwise `SIGSTOP`) — it runs zero instructions and sends
 nothing. When the right IP is back, it resumes exactly where it stopped.
 If the IP never comes back within the grace period, the tree is stopped.
 
@@ -108,8 +108,17 @@ menu resumes everything. On GNOME the icon needs the AppIndicator extension
 "VPN blinked for 8s" notification on recovery — not two popups; a freeze
 longer than 60s alerts once.
 
-If the Bash prompt shows strange characters after the daemon freezes Claude
-Code, upgrade to shuang 0.7.1 or later. For Bash 5.1+, add this to `~/.bashrc`:
+On Linux with writable cgroup v2 delegation (including typical systemd user
+sessions), the daemon automatically uses the cgroup freezer. A directly launched
+Claude keeps its terminal while frozen and resumes without `fg`, a shell hook,
+or `shuang run`. Each process returns to its original cgroup on recovery;
+independent policy claims still have to be released before it resumes.
+
+If the freezer is unavailable, protection falls back to `SIGSTOP`. This can
+return the terminal to the shell; a later `SIGCONT` handler can enable mouse
+reporting again. For interactive apps on these systems, use `shuang run -- claude`
+to keep the terminal occupied during a freeze. For Bash 5.1+, also add this
+prompt cleanup to `~/.bashrc`:
 
 ```bash
 source <(shuang shell-hook bash)
