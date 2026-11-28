@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.2 — 2026-11-28
 
 - Linux: prefer the delegated cgroup v2 freezer over SIGSTOP, preserving the
   foreground terminal of directly launched interactive apps through network
