@@ -745,7 +745,7 @@ fn refresh_process_status(
         for pid in targets {
             if let Some(process) = system.process(pid) {
                 match process.status() {
-                    ProcessStatus::Stop | ProcessStatus::Tracing => {
+                    status if crate::platform::is_suspended(pid.as_u32(), status) => {
                         stopped += 1;
                         alive += 1;
                     }

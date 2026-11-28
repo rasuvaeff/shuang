@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Linux: prefer the delegated cgroup v2 freezer over SIGSTOP, preserving the
+  foreground terminal of directly launched interactive apps through network
+  freezes. Resume returns each process to its original cgroup without SIGCONT;
+  independent claims and crash recovery retain their existing policy checks.
+  Systems without writable delegation retain SIGSTOP protection.
+- Bash: reset each terminal reporting mode separately for JediTerm compatibility.
+
 ## 0.1.0 — 2026-11-04
 
 - Initial implementation: `run` (kill switch for one command, exit codes

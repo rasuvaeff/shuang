@@ -119,7 +119,11 @@ pub fn arp_output_mac(arp_output: &str) -> Option<String> {
 
 /// Is the current network trusted? (config MACs are normalized lowercase.)
 pub fn is_trusted(configured: &[String]) -> bool {
-    match gateway_mac() {
+    matches_gateway(configured, gateway_mac())
+}
+
+fn matches_gateway(configured: &[String], gateway: Option<String>) -> bool {
+    match gateway {
         Some(mac) => configured.iter().any(|c| c.to_ascii_lowercase() == mac),
         None => false,
     }
@@ -223,15 +227,17 @@ mod tests {
     }
 
     #[test]
-    fn trust_check_matches_current_gateway_or_fails_closed() {
-        match gateway_mac() {
-            Some(mac) => {
-                // Case-insensitive match against the live gateway.
-                assert!(is_trusted(&[mac.to_uppercase()]));
-                assert!(!is_trusted(&["00:00:00:00:00:00".to_string()]));
-            }
-            // No gateway detected (non-Linux): never trusted — fail closed.
-            None => assert!(!is_trusted(&["aa:bb:cc:dd:ee:ff".to_string()])),
-        }
+    fn trust_check_matches_gateway_or_fails_closed() {
+        let configured = ["AA:BB:CC:DD:EE:FF".to_string()];
+        assert!(matches_gateway(
+            &configured,
+            Some("aa:bb:cc:dd:ee:ff".to_string())
+        ));
+        assert!(!matches_gateway(
+            &configured,
+            Some("00:00:00:00:00:00".to_string())
+        ));
+        assert!(!matches_gateway(&configured, None));
+        assert!(!matches_gateway(&[], Some("aa:bb:cc:dd:ee:ff".to_string())));
     }
 }

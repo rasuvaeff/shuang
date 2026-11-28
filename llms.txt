@@ -13,7 +13,7 @@ curl -fsSL https://raw.githubusercontent.com/rasuvaeff/shuang/master/scripts/ins
 ## Rules
 
 - Fail-closed: unknown IP (no quorum) is never allowed.
-- The whole process tree is frozen (SIGSTOP / NtSuspendProcess), not just the root pid.
+- The whole process tree is frozen (Linux cgroup v2 freezer where writable, otherwise SIGSTOP / NtSuspendProcess), not just the root pid.
 - The config file is never rewritten: `shuang allow` and profile selection write `state.toml`.
 - The per-user frozen.toml journal records claims before suspension. The daemon
   releases its holds on clean exit. Orphans require the same daemon policy and
@@ -119,3 +119,11 @@ services = [...]  # default: claude.ai, api.anthropic.com, chatgpt.com, api.open
 ```
 
 Empty allowlist + `run` = the startup addresses are allowed (freeze on change).
+
+Linux freezing: automatically prefers delegated cgroup v2 leaves, one per process.
+Direct interactive launches retain foreground ownership; no SIGCONT handler runs.
+Resume migrates each process back to its original cgroup only after its last claim
+is released, including orphan recovery. Undelegated/read-only hosts fall back to
+SIGSTOP; use `shuang run -- claude` for terminal continuity on those hosts.
+The Bash hook sends separate DEC mode resets for JediTerm compatibility; it does
+not prevent background SIGCONT handlers from re-enabling reporting on fallback.
